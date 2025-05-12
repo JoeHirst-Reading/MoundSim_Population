@@ -1,0 +1,3134 @@
+;-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------;
+;-----------------------------------------------------------------------███╗░░░███╗░█████╗░██╗░░░██╗███╗░░██╗██████╗░░██████╗██╗███╗░░░███╗-----------------------------------------------------------------------;
+;-----------------------------------------------------------------------████╗░████║██╔══██╗██║░░░██║████╗░██║██╔══██╗██╔════╝██║████╗░████║-----------------------------------------------------------------------;
+;-----------------------------------------------------------------------██╔████╔██║██║░░██║██║░░░██║██╔██╗██║██║░░██║╚█████╗░██║██╔████╔██║-----------------------------------------------------------------------;
+;-----------------------------------------------------------------------██║╚██╔╝██║██║░░██║██║░░░██║██║╚████║██║░░██║░╚═══██╗██║██║╚██╔╝██║-----------------------------------------------------------------------;
+;-----------------------------------------------------------------------██║░╚═╝░██║╚█████╔╝╚██████╔╝██║░╚███║██████╔╝██████╔╝██║██║░╚═╝░██║-----------------------------------------------------------------------;
+;-----------------------------------------------------------------------╚═╝░░░░░╚═╝░╚════╝░░╚═════╝░╚═╝░░╚══╝╚═════╝░╚═════╝░╚═╝╚═╝░░░░░╚═╝-----------------------------------------------------------------------;
+;-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------;
+
+extensions [ gis table csv ]
+
+; Declare two types of agents - Households and Settlements:
+breed [ households household ]                                                   ; Represent nuclear family units of Parents + Children
+breed [ settlements settlement ]                                                 ; Represent pre-Columbian settlement atop an earthen habitation mound
+
+globals [
+  ; Storage variables for imported datasets:
+  elevation-data                                                                 ; Sourced from TanDEM-X (12*12m resolution). Data has been detrended and resampled to 100*100m
+  landuse-data                                                                   ; Created for this study
+  productivity-data                                                              ; Lombardo et al., (2012), Plotzki et al., (2015)
+  death-prob                                                                     ; Gurven et al., (2007)
+  max-veg-for
+  max-veg-sav
+
+  ; Constants:
+  adult-maize-demand					                                                    ; Described below
+  adult-forage-demand
+  adult-fuelwood-demand
+  adult-palm-demand
+  adult-protein-demand
+  child-maize-demand
+  child-forage-demand
+  child-fuelwood-demand
+  child-palm-demand
+  child-protein-demand
+  age-forest-production
+  fertile-range
+  max-migration-size-prop
+  migration-size-denom
+  min-capacity-migration-mod
+  min-migration-households
+  min-parent-age
+  forage-production
+  fuelwood-production
+  palm-production
+  protein-production
+  fish-production
+  potential-new-sites
+  restore-age-limit
+  spoilage
+  suitable-elevation
+  suitable-fishing-elevation
+
+  ; Observation variables:
+  dissolved-households                                                           ; number of households lost per timestep
+  migrated-households                                                            ; number of migrating households per timestep
+  new-households                                                                 ; number of new households per timestep
+  num-age-deaths                                                                 ; number of age-related deaths
+  num-maize-deaths                                                               ; number of deaths related to maize shortage
+  num-forage-deaths                                                              ; number of deaths related to foraged tree crop shortage
+  num-fuelwood-deaths                                                            ; number of deaths related to fuelwood shortage
+  num-palm-deaths                                                                ; number of deaths related to palm leaf shortage
+  num-protein-deaths                                                             ; number of deaths related to animal protein shortage
+  num-settlements                                                                ; number of settlements
+  old-population                                                                 ; population during the previous timestep
+  population-growth                                                              ; population growth rate
+  population                                                                     ; total population
+  settlement-mean-dist-sd                                                        ; stdev mean distance between a settlement and all other settlements
+  settlement-min-dist-mean                                                       ; mean distance between a settlement and its nearest neighbour
+  settlement-min-dist-sd                                                         ; stdev distance between a settlement and its nearest neighbour
+  settlement-population-mean                                                     ; mean population of settlements
+  settlement-population-sd                                                       ; stdev population of settlements
+  settlement-xcor-mean                                                           ; mean x coordinate of settlements
+  settlement-xycor-dist-mean                                                     ; mean distance of settlements from mean coordinates of all settlements
+  settlement-xycor-dist-sd                                                       ; stdev distance of settlements from mean coordinates of all settlements
+  settlement-ycor-mean                                                           ; mean y coordinate of settlements
+]
+
+patches-own [
+  ; Immutable:
+  elevation                                                                      ; Elevation data. Stores variable from dataset held within elevation-data
+  potential-forest?                                                              ; Determines whether the patch can transition to forested land.
+  productivity                                                                   ; Stores variable from dataset held within productivity-data
+
+  ; Mutable:
+  land-use                                                                       ; Land cover of patch. Stores variable from dataset held within landuse-data
+  last-converted                                                                 ; Timestep during which patch was last cleared by a household agent
+  modifiable?                                                                    ; Can patch be modified by household agents?
+  owner                                                                          ; Owner household (if patch is claimed)
+  settlement-owner                                                               ; Settlement that controls this territory (if any)
+  suitable-for-settlement?                                                       ; Determines whether a settlement can spawn on this patch
+  updating?                                                                      ; Is patch experiencing secondary succession?
+  vegetation                                                                     ; Stores patch vegetation score
+
+  ; Supply Variables:
+  maize-supply                                                                   ; Kg/yr Maize production
+  forage-supply                                                                  ; Kg/yr Tree crop production
+  fuelwood-supply                                                                ; Kg/yr Fuelwood production
+  palm-supply                                                                    ; Leaves/yr Palm leaf production
+  protein-supply                                                                 ; Kg/yr Animal protein production
+
+  ; Observation:
+  n-modified                                                                     ; Number of times the patch has been modified
+]
+
+settlements-own [
+  ; Base Variables:
+  capacity-modifier                                                              ; Modifier to base population capacity of settlement
+  communal-maize-surplus                                                         ; Stored maize surplus (kg) for communal use
+  communal-fuelwood-surplus                                                      ; Stored fuelwood surplus (kg) for communal use
+  communal-protein-surplus                                                       ; Stored protein surplus (kg) for communal use
+  agricultural-area                                                              ; Defines area that can be modified by household members of the settlement
+  settlement-current-capacity                                                    ; Current settlement population capacity after (base capacity, modified by capacity-modifier)
+  settlement-population                                                          ; Population of the settlement
+  fishing-patches                                                                ; Patches where fishing is possible
+  local-forest-patches                                                           ; Patches from which forest resources can be extracted
+
+  ; Observation variables:
+  mean-dist                                                                      ; Mean distance between the settlement and all other settlements
+  num-reoccupied                                                                 ; Number of times the settlement has been reoccupied after abandonment
+  remaining-maize                                                                ; Used in the 'decrease-population' procedure for communal resource distribution
+  remaining-forage
+  remaining-fuelwood
+  remaining-palm
+  remaining-protein
+]
+
+households-own [
+  ; Base Variables:
+  household-territory                                                            ; Stores identity of land patches owned by the household
+  parents                                                                        ; Adult members of the household
+  children                                                                       ; Child members of the household
+
+  ; Resource Demands
+  maize-demand                                                                   ; kg/yr Maize requirement
+  forage-demand                                                                  ; kg/yr Tree Crop requirement
+  fuelwood-demand                                                                ; kg/yr Fuelwood requirement
+  palm-demand                                                                    ; Leaves/yr Palm Leaf requirement
+  protein-demand                                                                 ; kg/yr Animal Protein requirement
+
+  expected-maize-production                                                      ; Expected quantity of maize produced per ha
+  expected-forage-production                                                     ; Expected quantity of foraged tree crops produced per ha
+  expected-fuelwood-production                                                   ; Expected quantity of fuelwood produced per ha
+  expected-palm-production                                                       ; Expected quantity of palm leaves produced per ha
+
+  ; State Flags:
+  maize-stressed?                                                                ; Tracks if household is short of maize
+  forage-stressed?                                                               ; Tracks if household is short of foraged tree crops
+  fuelwood-stressed?                                                             ; Tracks if household is short of fuelwood
+  palm-stressed?                                                                 ; Tracks if household is short of palm leaves
+  protein-stressed?                                                              ; Tracks if household is short of animal protein
+
+  severe-maize-short?                                                            ; Tracks if household requires >1 more patch of land for maize
+  maize-short?                                                                   ; Tracks if household requires 1 more patch of land for maize
+  agroforest-short?                                                              ; Tracks if household needs additional land for forest resources
+]
+
+
+
+;#################################################################################################
+;#################################### Setup procedures ###########################################
+;#################################################################################################
+
+to setup ; Observer Context
+
+  ; Reset model to default state:
+  ca                                                                ; Clear the world
+  reset-ticks                                                       ; Set ticks to 0
+  configure                                                         ; Comment this out if you want to set your own variables.
+  assign-constants
+  assign-raster-data
+  spawn-settlements                                                 ; Spawn Settlement agents
+  spawn-households                                                  ; Spawn Household agents
+  set population sum [ num-inhabitants ] of households
+  update-observations
+  update-plots
+end
+
+to assign-constants ; Observer Contextf
+  ; Constants:
+  set adult-maize-demand 178.12                                    ; Maize demand kg adult-1 yr-1
+  set adult-forage-demand 21.9                                     ; Foraged tree crops demand kg adult-1 yr-1
+  set adult-fuelwood-demand 700                                    ; Fuelwood demand kg adult-1 yr-1
+  set adult-palm-demand 22.72                                      ; Palm leaves demand leaves adult-1 yr-1
+  set adult-protein-demand 16.15                                   ; Animal protein demand kg adult-1 yr-1
+  set child-maize-demand 162.85                                    ; Maize demand kg child-1 yr-1
+  set child-forage-demand 21.9                                     ; Foraged tree crops demand kg child-1 yr-1
+  set child-fuelwood-demand 700                                    ; Fuelwood demand kg child-1 yr-1
+  set child-palm-demand 22.72                                      ; Palm leaves demand leaves child-1 yr-1
+  set child-protein-demand 15.33                                   ; Animal protein demand kg child-1 yr-1
+  set fertile-range 34                                             ; Number of years from min-parent-age a female may produce children
+  set max-migration-size-prop 0.5                                  ; Maximum proportion of Households in an existing settlement that migrate to form a new settlement/join another existing one
+  set max-veg-for ln yrs-forest-regen                              ; Vegetation score of old growth/fully regenerated forest
+  set max-veg-sav ln yrs-savanna-regen                             ; Vegetation score of old growth/fully regenerated savanna
+  set migration-size-denom 10                                      ; Mean value for exponential distribution when calculating migration size
+  set min-capacity-migration-mod 0.5                               ; Minimum proportion of Settlement capacity reached before migration events may occur
+  set min-migration-households 5                                   ; Minimum number of Households necessary for a migration event to occur
+  set min-parent-age 16                                            ; Minimum age required before children can form a new Household
+  set age-forest-production 7                                      ; Minimum age of Fallow/Agroforestry before production of forest resources
+  set forage-production 760                                        ; Supply of Foraged tree crops per Forest Patch kg yr-1
+  set fuelwood-production 1200                                     ; Supply of Fuelwood per Forest Patch kg yr-1
+  set palm-production 206                                          ; Supply of Palm leaves per Forest Patch leaves yr-1
+  set protein-production 0.23                                      ; Supply of Animal protein per Forest Patch kg yr-1
+  set fish-production 0.084                                        ; Base Aquatic Protein supply per Patch that can be fished kg yr-1. Multiplied by fish-density.
+  set potential-new-sites 100                                      ; Number of patches considered by migrating Households when new Settlement site is chosen
+  set restore-age-limit 15                                         ; Maximum number of timesteps before a Fallowed patch is fully abandoned and left to regenerate
+  set spoilage 0.15                                                ; Proportion of Maize lost from crop each year due to pest/outside influence
+  set suitable-elevation 2.04                                      ; Minimum Elevation where Settlements can spawn
+  set suitable-fishing-elevation -0.5875                           ; Maximum Elevation where fish can be produced.end
+end
+
+to configure ;; Observer Context
+
+  ; Config Data:
+  let config csv:from-file "config.txt"
+  set start-population-modifier item 0 item 0 config               ; Modifier to starting population
+  set prob-household-birth item 0 item 1 config                    ; Probability for household with two adults to produce child per timestep
+  set yr-10% item 0 item 2 config                                  ; Years taken to increase settlement capacity by 10%
+  set settlement-base-capacity item 0 item 3 config                ; Base population capacity per settlement
+  set migration-rate item 0 item 4 config                          ; Probability for eligible settlement to experience a migration event
+  set new-settlement-probability item 0 item 5 config              ; Probability for migration event to initially attempt to create a new settlement
+  set max-settlement-density item 0 item 6 config                  ; The maximum number of settlements acceptable within pack-radius
+  set migration-distance item 0 item 7 config                      ; Maximum distance households will migrate
+  set protein-modifier item 0 item 8 config                        ; Maximum protein percent sourced from animals (aquatic + Terrestrial)
+  set land-for-cultivation item 0 item 9 config                    ; Restricts cultivation patch type
+  set mig-pop-cost item 0 item 10 config                           ; Households preferentially migrate to less populated settlements
+  set mig-dist-cost item 0 item 11 config                          ; Households preferentially migrate to closer settlements
+  set mig-pop-bonus item 0 item 12 config                          ; Households preferentially migrate to more populated settlements
+  set mig-dist-bonus item 0 item 13 config                         ; Households preferentially migrate to farther settlements
+  set mig-lobe-bonus item 0 item 14 config                         ; Households preferentially migrate to areas on the sediment lobe
+  set intentional-agroforestry? item 0 item 15 config              ; Households intentionally account for forest products when cultivating land
+  set forest-restrict? item 0 item 16 config                       ; Settlements may only form on forested land
+  set lobe-restrict? item 0 item 17 config                         ; Settlements may only form on the sediment lobe (Lombardo et al., 2012)
+  set maize-die? item 0 item 18 config                             ; Flag for whether Settlements die due to lack of Maize
+  set forage-die? item 0 item 19 config                            ; Flag for whether Settlements die due to lack of Forage
+  set fuelwood-die? item 0 item 20 config                          ; Flag for whether Settlements die due to lack of Fuelwood
+  set palm-die? item 0 item 21 config                              ; Flag for whether Settlements die due to lack of Palm
+  set protein-die? item 0 item 22 config                           ; Flag for whether Settlements die due to lack of Protein
+  set start-location item 0 item 23 config                         ; Determines location of initial settlements
+  set agricultural-radius item 0 item 24 config                    ; Determines radius around Settlements where patches can be cultivated
+  set forage-radius item 0 item 25 config                          ; Determines radius around Settlements where resources can be foraged
+  set percent-patches-considered item 0 item 26 config             ; Number of patches considered when selecting land
+  set probability-of-reactivation item 0 item 27 config            ; Probability for Households to reactivate Fallowed land when converting land
+  set overproduction-mod item 0 item 28 config                     ; Amount of additional Maize Households attempt to cultivate
+  set forest-prod-mod item 0 item 29 config                        ; Amount of additional resources produced by forests modified by Households
+  set fallow-period item 0 item 30 config                          ; Number of timesteps Fallow land must be left before being recultivated
+  set fallow-age item 0 item 31 config                             ; Number of timesteps Cropland is cultivated before being abandoned
+  set cropland-production item 0 item 32 config                    ; Amount of maize produced per patch of cropland
+  set yrs-savanna-regen item 0 item 33 config                      ; Number of timesteps for Fallow to convert to New Growth Savanna
+  set yrs-forest-regen item 0 item 34 config                       ; Number of timesteps for Fallow to convert to New Growth Forest
+  set fish-density item 0 item 35 config                           ; Modifier to quantity of aquatic protein available per patch
+  set excl-radius item 0 item 36 config                            ; Radius around an active settlement in which a new settlement is unable to spawn
+  set model item 0 item 37 config                                  ; Submodel to determine the preference system used when claiming and cultivating land
+  set productivity-bonus item 0 item 38 config                     ; Households preferentially select more productive patches based upon sediment lobe data (Lombardo et al., 2012)
+  set distance-cost item 0 item 39 config                          ; Households preferentially select patches closer to the settlement
+  set flooding-bonus item 0 item 40 config                         ; Households preferentially select patches at lower elevation
+  set difficulty-cost item 0 item 41 config                        ; Households preferentially select patches that are easier to clear (based on vegetation level)
+  set elevation-bonus item 0 item 42 config                        ; Households preferentially select patches at higher elevation
+  set aggregation-bonus item 0 item 43 config                      ; Households preferentially select patches next to existing Cropland/Fallow.
+end
+
+
+to assign-raster-data ;; Observer Context
+
+  ; Import data + set world limits:
+  set landuse-data gis:load-dataset "MMR_LandUse.asc"
+  set elevation-data gis:load-dataset "MMR_Elevation.asc"
+  set productivity-data gis:load-dataset "MMR_Sediment.shp"
+  set death-prob table:from-json-file "MMR_Death.json"
+  gis:set-world-envelope gis:envelope-of landuse-data
+
+  ; Initialise Patch Variables:
+  ask patches
+  [ set land-use ( gis:raster-sample landuse-data self )
+    set elevation ( gis:raster-sample elevation-data self)
+    (ifelse
+      land-use = 0 [ set elevation -9999
+                     set land-use "Water" ]
+      land-use = 1 [ set land-use "Savanna"
+                     set vegetation max-veg-sav ]
+      land-use = 2 [ set land-use "Old Growth Forest"
+                     set vegetation max-veg-for ] )
+    set owner no-turtles
+    set settlement-owner no-turtles
+    set updating? False
+    set potential-forest? land-use = "Old Growth Forest"
+    update-colour ]
+  ask patches gis:intersecting productivity-data [set productivity 1]
+
+  ; Identify suitable settlement sites:
+  ask patches
+  [ set suitable-for-settlement? False
+    if pxcor > 29 and pycor > 29 and pxcor < 627 and pycor <
+      734 and elevation >= suitable-elevation [ set suitable-for-settlement? True ]
+    if forest-restrict? = True and potential-forest? = False [ set suitable-for-settlement? False ]
+    if lobe-restrict? = True and productivity != 1 [set suitable-for-settlement? False] ]
+end
+
+to spawn-settlements ; Observer Context
+
+  ; Delimit area where settlements can spawn:
+  let candidate-patches (ifelse-value
+    start-location = "ALL" [ patches ]
+    start-location = "NORTH-EAST" [ patches with [ pxcor >= 328 and pycor >= 382 ] ]
+    start-location = "NORTH-WEST" [ patches with [ pxcor < 328 and pycor >= 382 ] ]
+    start-location = "SOUTH-EAST" [ patches with [ pxcor >= 328 and pycor < 382 ] ]
+    start-location = "SOUTH-WEST" [ patches with [ pxcor < 328 and pycor < 382 ] ] )
+
+  ; Spawn settlements
+  repeat 10
+  [ ask one-of candidate-patches with [ suitable-for-settlement?] [
+    produce-settlement ] ]
+end
+
+to produce-settlement ;; Patch Context
+
+  ; Defensive programming – automatically set to forest cultivation is agroforestry is desired
+  if land-for-cultivation = "SAVANNA ONLY" and intentional-agroforestry? = True [set land-for-cultivation "FOREST AND SAVANNA"]
+
+  ; Spawn new settlement:
+  sprout-settlements 1
+  [
+    ; Basic Variables
+    set size 15
+    set shape "Triangle"
+    set color black
+    set communal-maize-surplus 0
+    set communal-fuelwood-surplus 0
+    set communal-protein-surplus 0
+    set num-reoccupied 0
+
+    ; Identify agricultural land:
+    (ifelse
+      land-for-cultivation = "SAVANNA ONLY" [set agricultural-area patches in-radius
+        agricultural-radius with [potential-forest? = False]]
+      land-for-cultivation = "FOREST ONLY" [set agricultural-area patches in-radius
+        agricultural-radius with [potential-forest? = True]]
+      land-for-cultivation = "FOREST AND SAVANNA" [set agricultural-area patches in-radius
+        agricultural-radius with [land-use != "Water"]])
+
+   ; Exclude nearby patches from being inhabited + identify patches in foraging range:
+   ask patches in-radius excl-radius [ set suitable-for-settlement? False ]
+   ask patches in-radius forage-radius [ set settlement-owner min-one-of settlements with
+      [color = black] [ distance myself ]]
+  ask agricultural-area [set modifiable? True]]
+end
+
+to spawn-households ; Observer Context
+  ask settlements [
+    ; Identify patches in the local area with forest resources + fishing:
+    set local-forest-patches patches in-radius forage-radius with [ potential-forest? = True]
+    set fishing-patches patches in-radius forage-radius with [ potential-forest? = False and
+      elevation < suitable-fishing-elevation ]
+
+    ; Produce new households:
+    repeat (12 * start-population-modifier) [ produce-household self] ]
+
+  ; Instantiate Parent + Child inhabitants within households:
+  ask households [
+      set parents n-values 2 [ (random fertile-range + min-parent-age) * -1 ]
+      let opportunities (range (max parents + min-parent-age) 0 )
+      set children filter [ random-float 1 < 0.2 ] opportunities ]				
+end
+
+to produce-household [ input-settlement ] ; Settlement Context
+
+  ; Spawn new household:
+  hatch-households 1
+  [ ; Basics:
+    set color brown
+    set shape "House"
+    set size 7
+    set heading random 360
+    fd 10
+    set household-territory no-patches
+    create-link-with input-settlement [ set hidden? True ]
+
+    ; Stress Flags:
+    set maize-stressed? False
+    set forage-stressed? False
+    set fuelwood-stressed? False
+    set palm-stressed? False
+    set protein-stressed? False
+
+    ; Expected resource productivity:
+    set expected-maize-production cropland-production
+    set expected-forage-production forage-production
+    set expected-fuelwood-production fuelwood-production
+    set expected-palm-production palm-production
+
+    ; Shortage flags:
+    set agroforest-short? False
+    set maize-short? False
+    set severe-maize-short? False ]
+end
+
+
+;#################################################################################################
+;##################################### Go procedure ##############################################
+;#################################################################################################
+
+to go ; Observer Context
+  increase-population                                                            ; New Households are created and new children are born
+  migrate                                                                        ; Households migrate, and new settlements are created
+  convert-land                                                                   ; Households convert land for agriculture/agroforestry
+  resource-production                                                            ; Resources are assigned to productive patches
+  decrease-population                                                            ; Households extract additional resource, or otherwise become stressed/die
+  vegetation-growth                                                              ; Cropland is abandoned and fallowed land regenerates
+  tick
+  update-observations
+
+  ; Stop model:
+  if ticks >= 1000 [stop]
+end
+
+to step ; Observer Context
+  go
+end
+
+to update-observations ; Observer context
+
+  ; Population:
+  set num-settlements count settlements
+  set old-population population
+  set population sum [num-inhabitants] of households
+  set population-growth ( population - old-population ) / old-population * 100
+  set settlement-population-mean mean [settlement-population] of settlements
+  set settlement-population-sd standard-deviation [settlement-population] of settlements
+
+  ; Spatial Stats:
+  set settlement-min-dist-mean precision (mean [distance min-one-of other settlements [distance
+    myself]] of settlements) 2
+  set settlement-min-dist-sd precision (standard-deviation [distance min-one-of other settlements
+    [distance myself]] of settlements) 2
+  set settlement-xcor-mean round (mean [xcor] of settlements)
+  set settlement-ycor-mean round (mean [ycor] of settlements)
+  set settlement-xycor-dist-mean precision (mean [distance patch settlement-xcor-mean
+    settlement-ycor-mean] of settlements) 2
+  set settlement-xycor-dist-sd precision (standard-deviation [distance patch settlement-xcor-mean
+    settlement-ycor-mean] of settlements) 2
+  if count settlements <= 143 or ticks = 1000 [
+    ask settlements [set mean-dist mean [distance myself] of other settlements]
+    set settlement-mean-dist-sd standard-deviation [mean-dist] of settlements ]
+  if ticks = 1000 [ csv:to-file (word "MoundSim_Space-" behaviorspace-run-number ".csv") settlement-space-data]
+end
+
+to-report settlement-space-data ; Observer context
+  report fput ["xcor" "ycor" "num-reoccupied" "population" "settlement-current-capacity"
+   ][(list xcor ycor num-reoccupied settlement-population settlement-current-capacity)] of settlements
+end
+
+
+
+;#################################################################################################
+;#################################### increase-population ########################################
+;#################################################################################################
+
+to increase-population ; Observer Context
+  update-settlement-capacity                                                     ; Increase settlement population capacity
+  household-fission                                                              ; Produces new households
+  remove-empty-households                                                        ; Removes empty households
+  reproduce                                                                      ; Produces new children
+end
+
+to update-settlement-capacity ; Observer Context
+
+  ask settlements
+  [ ; Update Settlement Population:
+    set settlement-population sum [num-inhabitants] of link-neighbors
+
+    ; Modify Settlement Population Capacity:
+    if settlement-population > 0
+    [ set capacity-modifier capacity-modifier + (settlement-population /
+      settlement-base-capacity ) ]
+
+    ; Generate new capacity:
+    set settlement-current-capacity round ( settlement-base-capacity + ( settlement-base-capacity /
+    10 * capacity-modifier / yr-10% ) ) ]
+end
+
+to household-fission ; Observer Context
+  set new-households 0                                                             ; Reset Observations from previous timestep
+  let age-threshold ticks - min-parent-age
+
+  ask settlements [
+    ; Pair households:
+    let pairs-of-eligible-households households-to-pairs link-neighbors with [
+    not empty? children and first children <= age-threshold ]
+
+    ; Spawn new household based on pairs:
+    foreach pairs-of-eligible-households [
+      parent-households ->
+      set new-households new-households + 1
+      hatch-households 1 [
+
+        ; Base variables:
+        set color brown
+        set shape "house"
+        set size 7
+        let new-settlement [my-settlement] of one-of parent-households
+        move-to new-settlement
+        create-link-with new-settlement [set hidden? True]
+        move-to [my-settlement] of one-of parent-households
+        set heading random 360
+        fd 10
+        set household-territory no-patches
+
+        ; Stress Flags:
+        set maize-stressed? False
+        set forage-stressed? False
+        set fuelwood-stressed? False
+        set palm-stressed? False
+        set protein-stressed? False
+
+        ; Expected Resource Productivity:
+        set expected-maize-production mean [expected-maize-production] of parent-households
+        set expected-forage-production mean [expected-forage-production] of parent-households
+        set expected-fuelwood-production mean [expected-fuelwood-production] of parent-households
+        set expected-palm-production mean [expected-palm-production] of parent-households
+
+        ; Shortage Flags:
+        set agroforest-short? False
+        set maize-short? False
+        set severe-maize-short? False
+
+        ; Children become adults. Removed from former household:
+        set children []
+        set parents [ first children ] of parent-households
+        ask parent-households [ set children but-first children ] ] ]
+  ]
+end
+
+to reproduce ; Observer Context
+  ; Calculate eligibility (second item in list [Assumed Female] must
+  ; be within fertile range:
+  ask households with [length parents = 2 and
+    item 1 parents >= ( ticks - ( min-parent-age + fertile-range ) ) ] [
+
+    ; Eligible households produce Children:
+    if random-float 1.00 <= prob-household-birth
+  [ set children lput ticks children ]
+  ]
+end
+
+to remove-empty-households ; Observer Context
+  set dissolved-households 0
+  ask households [
+    if num-inhabitants = 0
+    [ set dissolved-households dissolved-households + 1
+      remove-household-territory
+      die ] ]
+end
+
+to remove-household-territory ; Household Context
+  ; Abandon all territory claimed by the household:
+  ask household-territory
+  [ set owner no-turtles
+    if land-use = "Cropland" [                                                     ; Cropland Reverts to Fallow
+      set land-use "Fallow"
+      set last-converted ticks
+      update-colour ] ]
+end
+
+to-report households-to-pairs [ set-of-households ] ; Settlement Context
+  ; Reports a list of turtlesets, each has two members from the original set
+  ; a random turtle is left out without an even number.
+  ; An empty list if <2 agents
+  let household-list [ self ] of set-of-households
+  let n length household-list
+  report map [ i -> turtle-set sublist household-list i (i + 2) ] (range 0 (n - n mod 2) 2)
+end
+
+;#################################################################################################
+;##################################### migration #################################################
+;#################################################################################################
+
+to migrate ; Observer Context
+
+  set migrated-households 0                                                        ; Reset Observations from previous timestep
+
+  ; Identify settlements eligible for a migration event. Must have minimum number of people
+  ; Migration rate based on population density relative to capacity.
+  ask settlements with [settlement-population > (settlement-current-capacity *
+    min-capacity-migration-mod )]
+  [ let migration-probability min (list (migration-rate * (settlement-population /
+    settlement-current-capacity)) (migration-rate * 2))  ; Max * 2 base rate
+
+  ; Determine if an event occurs:
+  if random-float 1.00 <= migration-probability
+    [ ; Determine if starting a new settlement joining an existing one:
+      ifelse random-float 1.00 < new-settlement-probability
+      [crt-new-settlement]
+      [join-old-settlement]]]
+end
+
+to join-old-settlement ; Settlement Context
+
+  ; Switch choice if no available existing settlements:
+  if not any? other settlements in-radius migration-distance with
+  [ any? link-neighbors and
+    settlement-population < settlement-current-capacity ]
+  [ ifelse (count other settlements in-radius migration-distance with
+    [ any? link-neighbors ] ) >= max-settlement-density
+    [ ;Abort:
+      stop ]
+    [ ; Change tactic:
+      crt-new-settlement
+      stop ] ]
+
+  ; Calculate migration size:
+  let emigrating-households up-to-n-of migration-size households
+  if count emigrating-households < min-migration-households [stop]
+
+  ; Determine most suitable existing settlement:
+  let selected-settlement max-one-of other settlements in-radius
+  migration-distance with
+  [ any? link-neighbors and
+    settlement-population < settlement-current-capacity ]
+  [ calculate-habitability myself ]
+
+  ; Migrate to existing settlement:
+  ask emigrating-households
+  [ detach-old-settlement
+    attach-new-settlement selected-settlement
+    set migrated-households migrated-households + 1]
+end
+
+to crt-new-settlement ; Settlement Context
+
+  ; Switch choice if no suitable patches or too overcrowded:
+  if not any? patches in-radius migration-distance with [suitable-for-settlement?] or
+  (count other settlements in-radius migration-distance with [any? link-neighbors])
+  >= max-settlement-density
+  [ ifelse any? settlements in-radius migration-distance with
+    [ any? link-neighbors and
+      settlement-population < settlement-current-capacity ]
+    [ ; Change tactic:
+      join-old-settlement
+      stop ]
+    [ ; Abort:
+      stop ] ]
+
+  ; Calculate migration size:
+  let emigrating-households up-to-n-of migration-size households
+  if count emigrating-households < min-migration-households [stop]
+
+  ; Identify any sites that could be reoccupied:
+  let reoccupation-sites settlements in-radius migration-distance with
+  [ not any? link-neighbors and
+    [suitable-for-settlement?] of patch-here = True ]
+  if any? reoccupation-sites
+  [
+    ; Attach households to one of the reoccupation sites:
+    let new-settlement one-of reoccupation-sites
+    ask emigrating-households
+    [ detach-old-settlement
+      attach-new-settlement new-settlement
+      set migrated-households migrated-households + 1 ]
+
+    ; Reactivate the new settlement:
+    ask new-settlement
+    [ set color black
+      set num-reoccupied num-reoccupied + 1
+      ask patches in-radius excl-radius [set suitable-for-settlement? False]
+      ask patches in-radius forage-radius [ set settlement-owner min-one-of
+        settlements with [any? link-neighbors] [ distance self ] ] ]
+    stop ]
+
+  ; If no sites can be reoccupied, identify potential new sites:
+  let potential-sites up-to-n-of potential-new-sites patches in-radius migration-distance with
+  [ suitable-for-settlement? = True ]
+  let best-new-site max-one-of potential-sites [calculate-suitability myself]
+
+  ; Spawn new settlement:
+  ask best-new-site
+  [ produce-settlement
+
+    ; Instantiate local forest and fishing patches:
+    ask settlements-on best-new-site
+    [ set local-forest-patches patches in-radius forage-radius with [potential-forest?
+        = True]
+      set fishing-patches patches in-radius forage-radius with [potential-forest? =
+        False and elevation < suitable-fishing-elevation] ]
+
+    ; Migrate to new settlement:
+    ask emigrating-households
+    [ detach-old-settlement
+      attach-new-settlement (one-of settlements-on best-new-site)
+      set migrated-households migrated-households + 1 ]
+    ask settlements-on best-new-site [ set settlement-population sum
+      [num-inhabitants] of link-neighbors] ]
+end
+
+to-report calculate-habitability [settlement-id] ; Settlement Context
+
+  ; Calculate habitability score based on household preferences. Highest value settlement is selected.
+  let habitability 0
+  if mig-pop-cost > 0
+  [ set habitability habitability -
+     ( 100 * ( settlement-population ^ 2 / settlement-current-capacity ^ 2 ) ) * mig-pop-cost  ]
+  if mig-pop-bonus > 0
+  [ set habitability habitability +
+     ( 100 * ( settlement-population ^ 2 / settlement-current-capacity ^ 2 ) ) * mig-pop-bonus ]
+  if mig-dist-cost > 0
+  [ set habitability habitability -
+     ( 100 * ( (distance settlement-id) ^ 2 / migration-distance ^ 2 ) ) * mig-dist-cost ]
+  if mig-dist-bonus > 0
+  [ set habitability habitability +
+     100 * ( 1 + (log (distance settlement-id / migration-distance) 15 ) ) * mig-dist-bonus ]
+  if mig-lobe-bonus > 0
+  [ if [productivity] of patch-here = 1 [set habitability habitability + 100 * mig-lobe-bonus ] ]
+
+  report habitability
+end
+
+to-report calculate-suitability [settlement-id] ; Patch Context
+
+  ; Calculate suitability score based on household preferences. Highest value patch is selected.
+  let suitability 0
+  if mig-dist-cost > 0
+  [ set suitability suitability -
+     ( 100 * ( (distance settlement-id) ^ 2 / migration-distance ^ 2 ) ) * mig-dist-cost ]
+  if mig-dist-bonus > 0
+  [ set suitability suitability +
+     100 * ( 1 + (log (distance settlement-id / migration-distance) 15 ) ) * mig-dist-bonus ]
+  if mig-lobe-bonus > 0
+  [ if productivity = 1 [set suitability suitability + 100 * mig-lobe-bonus] ]
+
+  report suitability
+end
+
+to-report migration-size ; Settlement Context
+  ; Determine size of migration. Cannot exceed (max-migration-size-prop*100)% of households:
+  let n-households precision ( round ( random-exponential ( count
+    link-neighbors / migration-size-denom ) ) ) 0
+  if n-households >= (max-migration-size-prop * count link-neighbors) [set n-households round (
+     max-migration-size-prop * count link-neighbors)]
+  report n-households
+end
+
+to detach-old-settlement ; Household Context
+  ; Abandon Territory:
+  if household-territory != no-patches
+  [ remove-household-territory
+    set household-territory no-patches ]
+
+  ; Remove link to old settlement:
+  ask my-links [ die ]
+end
+
+to attach-new-settlement [ new-settlement ] ; Household Context
+  ; Link to new settlement:
+  create-link-with new-settlement [ set hidden? True ]
+
+  ; Move to new settlement:
+  move-to new-settlement
+  set heading random 360
+  fd 10
+end
+
+;#################################################################################################
+;#################################### convert-land ###############################################
+;#################################################################################################
+
+to convert-land ; Observer Context
+
+  ; Defensive programming to prevent agents seeking to cultivate forest when only
+  ; the savanna can be farmed:
+  if intentional-agroforestry? = True and land-for-cultivation = "SAVANNA ONLY"
+  [ show "Error: Cannot create Agroforestry when only savanna can be cleared. Operation aborted"
+    set land-for-cultivation "FOREST AND SAVANNA" ]
+
+  ask households
+  [ update-demand                                                                  ; Update resource demands
+    check-shortfall ]                                                              ; Determine whether additional agriculture is necessary
+  farm-new-land                                                                    ; Select new farm sites
+end
+
+to update-demand ; Household Context
+  set maize-demand ( adult-maize-demand * count-adults ) + ( child-maize-demand * count-children )
+  set forage-demand ( adult-forage-demand * count-adults ) + ( child-forage-demand * count-children )
+  set fuelwood-demand ( adult-fuelwood-demand * count-adults ) + ( child-fuelwood-demand * count-children )
+  set palm-demand ( adult-palm-demand * count-adults ) + ( child-palm-demand * count-children )
+  set protein-demand protein-modifier * ( ( adult-protein-demand * count-adults ) + ( child-protein-demand * count-children ) )
+end
+
+to check-shortfall ; Household Context
+
+  ; Reset variables:
+  set maize-short? False
+  set severe-maize-short? False
+
+  ; Calculate expected Maize:
+  let expected-maize-supply (1 - spoilage) * count household-territory with
+  [land-use = "Cropland"] * expected-maize-production
+
+  ; Flag Maize shortage:
+  if maize-demand * (1 + overproduction-mod) > (expected-maize-supply +
+    expected-maize-production) and land-for-cultivation != "FOREST ONLY"
+    [set severe-maize-short? True]
+  if severe-maize-short? = False and maize-demand * (1 + overproduction-mod) >
+    expected-maize-supply [set maize-short? True]
+
+  ; Expected Forest resources:
+  if intentional-agroforestry? = True and severe-maize-short? = False
+  [ ; Reset agroforestry flag:
+    set agroforest-short? False
+
+    ; Calculate expected resources:
+    let active-forest-production count household-territory with [potential-forest?]
+    let expected-forage-supply forage-production * active-forest-production * forest-prod-mod
+    let expected-fuelwood-supply fuelwood-production * active-forest-production
+    let expected-palm-supply palm-production * active-forest-production * forest-prod-mod
+
+    ; Determine forest resource shortage:
+    if forage-demand > expected-forage-supply or
+       fuelwood-demand > expected-fuelwood-supply or
+       palm-demand > expected-palm-supply
+    [ set agroforest-short? True ] ]
+end
+
+to farm-new-land ; Observer Context
+
+  ; Claim and convert land:
+  ask households [
+    if severe-maize-short? = True [ convert-patches-to-cropland ]                ; Converts up to 2 patches of savanna into cropland
+    if agroforest-short? = True [ convert-patch-to-agroforestry ]                ; Converts up to 1 patch of forest into cropland
+    if maize-short? = True [ convert-patch-to-cropland ]                         ; Converts up to 1 patch of non-water land into cropland
+
+    ; If unable to convert, try to reactivate / clear agroforestry:
+    if maize-short? = True
+    [ let acted? False
+      ask up-to-n-of 1 household-territory with [land-use = "Fallow" and
+      last-converted >= (Ticks - restore-age-limit)]
+      [ reactivate-cropland
+        set acted? True ]
+      if acted? = False [ ask up-to-n-of 1 household-territory with [
+        land-use = "Agroforestry" ] [ create-cropland myself ] ] ] ]
+end
+
+to convert-patches-to-cropland ; Household Context
+
+  let num-modified-patches 0
+
+  ; Reactivate Fallowed land
+  ; Identify reactivation land:
+  let potential-reactivated-cropland up-to-n-of 2 household-territory with
+  [ land-use = "Fallow" and
+    last-converted >= Ticks - restore-age-limit and
+    last-converted <= Ticks - fallow-period and
+    potential-forest? = False ]
+
+  ; Determine whether reactivation occurs:
+  if count potential-reactivated-cropland > 0 and random-float 1.00 <
+  probability-of-reactivation [
+    ask potential-reactivated-cropland
+    [ reactivate-cropland
+      set num-modified-patches num-modified-patches + 1 ] ]
+
+    ; If two patches are reactivated, remove shortage flag:
+    if num-modified-patches = 2 [ set severe-maize-short? False ]
+
+  ; If shortage flag remains, identify available unclaimed patches:
+  if severe-maize-short? = True
+  [ let potential-cropland up-to-n-of round ( percent-patches-considered / 100 *
+    (count [agricultural-area] of my-settlement ) ) ([agricultural-area] of my-settlement)
+    with [owner = no-turtles and member? land-use [ "Savanna" "New Growth Savanna" ] ]
+    let num-potential-cropland count potential-cropland
+
+    ; Claim up to two patches of unclaimed land for Cropland:
+    if num-potential-cropland > 0 [
+      while [ num-modified-patches < 2 and num-potential-cropland > 0 ][
+        let selected-site do-select-model potential-cropland
+        set household-territory (patch-set household-territory
+          selected-site)
+        ask selected-site [create-cropland myself]
+        set num-modified-patches num-modified-patches + 1
+        set num-potential-cropland num-potential-cropland - 1 ] ]
+
+    ; If shortage remains, remove severe shortage flag and gain shortage flag:
+    ifelse num-modified-patches = 2
+    [ set severe-maize-short? False ]
+    [ set severe-maize-short? False
+      set maize-short? True ] ]
+end
+
+
+to convert-patch-to-agroforestry ; Household Context
+
+  ; Identify available unclaimed patches:
+  let potential-agroforestry up-to-n-of round ( percent-patches-considered / 100 *
+    (count [agricultural-area] of my-settlement)) ([agricultural-area] of my-settlement) with [
+    owner = no-turtles and potential-forest? and land-use != "Fallow" ]
+
+  ; Select and convert patch:
+  if count potential-agroforestry > 0
+  [ let selected-site do-select-model potential-agroforestry
+    set household-territory (patch-set household-territory selected-site)
+    ask selected-site
+    [ create-cropland myself ]
+      set agroforest-short? False ]
+
+  ; If a patch is claimed, set maize-short? flag to false:
+  if agroforest-short? = False and maize-short? = True [ set
+    maize-short? False ]
+end
+
+to convert-patch-to-cropland ; Household Context
+
+  ; Reactivate Fallowed land
+  ; Identify reactivation land
+  let potential-reactivated-cropland up-to-n-of 1 household-territory with
+  [ land-use = "Fallow" and
+    last-converted >= Ticks - restore-age-limit and
+    last-converted <= Ticks - fallow-period ]
+
+  ; Determine whether reactivation occurs:
+  if count potential-reactivated-cropland > 0 and random-float 1.00 <
+  probability-of-reactivation
+  [ ask potential-reactivated-cropland [reactivate-cropland]
+    set maize-short? False ]
+
+  ; If shortage flag remains, identify available unclaimed patches:
+  if maize-short? = True
+  [ let potential-cropland up-to-n-of round ( percent-patches-considered / 100 *
+    (count [agricultural-area] of my-settlement)) ([agricultural-area] of my-settlement) with
+    [ owner = no-turtles and land-use != "Fallow"]
+
+    ; Claim a patch of unclaimed land for Cropland:
+    if count potential-cropland > 0
+    [ let selected-site do-select-model potential-cropland
+      set household-territory (patch-set household-territory
+        selected-site)
+      ask selected-site [create-cropland myself]
+      set maize-short? False ] ]
+end
+
+to-report do-select-model [ patch-input ] ; Household Context
+
+  let settlement-id one-of link-neighbors
+  let most-suitable-patch no-patches
+  (ifelse
+    ; NULL Model:
+    model = "NULL" [ set most-suitable-patch one-of patch-input ]
+
+    ; Environmental Variables Model:
+    model = "VARIABLES" [ set most-suitable-patch max-one-of
+      patch-input [ calculate-variability myself settlement-id ] ] )
+
+  report most-suitable-patch
+end
+
+to-report calculate-variability [ settlement-id household-id ] ; Patch Context
+
+  ; Calculate variability score based on household preferences.
+  ; Highest value patch is selected.
+  let utility 0
+  if productivity-bonus > 0 [ set utility utility + (100 * productivity-bonus * productivity) ]
+  if elevation-bonus > 0
+  [ let flood-aversion-bonus 100 * ( elevation - -2) / 4.04063
+    if elevation >= 2 [ set flood-aversion-bonus 100 ]
+    if elevation < -2 [ set flood-aversion-bonus 0 ]
+    set utility utility + elevation-bonus * flood-aversion-bonus ]
+  if flooding-bonus > 0
+  [ let flood-bonus 100 - 100 * ( elevation - -2) / 4.04063
+    if elevation >= 2 [ set flood-bonus 0 ]
+    if elevation < -2 [ set flood-bonus 0 ]
+    set utility utility + flooding-bonus * flood-bonus ]
+  if difficulty-cost > 0 [ set utility utility - difficulty-cost * (100 * ( vegetation /
+    max-veg-for ) ) ]
+  if distance-cost > 0
+  [ let distance-to-settlement distance settlement-id
+    let distance-penalty ( 100 * ( ( distance-to-settlement ^ 2 ) / ( agricultural-radius ^ 2 ) ) )
+    set utility utility - distance-cost * distance-penalty ]
+  if aggregation-bonus > 0 [ if any? neighbors with [ owner != no-turtles
+    and member? land-use ["Cropland" "Fallow"] ] [ set utility utility + ( 100 * aggregation-bonus)]]
+  report utility
+end
+
+to create-cropland [ household-id ] ; Patch Context
+
+  ; Base Variables:
+  set land-use "Cropland"
+  set owner household-id
+  set last-converted Ticks
+  set updating? False
+  set vegetation 0
+  set n-modified n-modified + 1
+
+  ; Supply variables:
+  set maize-supply 0
+  set forage-supply 0
+  set fuelwood-supply 0
+  set palm-supply 0
+  set protein-supply 0
+  update-colour
+end
+
+to reactivate-cropland ; Patch Context
+
+  ; Base Variables:
+  set land-use "Cropland"
+  set last-converted Ticks
+  set updating? False
+  set vegetation 0
+  set n-modified n-modified + 1
+
+
+  ; Supply variables
+  set maize-supply 0
+  set forage-supply 0
+  set fuelwood-supply 0
+  set palm-supply 0
+  set protein-supply 0
+  update-colour
+end
+
+;#################################################################################################
+;################################# resource-production ###########################################
+;#################################################################################################
+
+to resource-production ; Observer Context
+ ; Reset communal resource pools:
+ ask settlements
+    [ set communal-maize-surplus 0
+      set communal-fuelwood-surplus 0
+      set communal-protein-surplus 0 ]
+
+  ; Assign resources based on biophysical data:
+  ask patches
+  [ if land-use = "Agroforestry" and ticks - last-converted >= age-forest-production [ do-agroforestry-production ]
+    if land-use = "Cropland" [ do-cropland-production ]
+    if land-use = "Fallow" and potential-forest? = True and ticks - last-converted >= age-forest-production [ do-fallow-production ] ]
+end
+
+to do-agroforestry-production ; Patch Context
+  ; Resources produced by Agroforestry:
+  set maize-supply 0
+  set forage-supply (precision (( random-normal forage-production (0.15 * forage-production)) * vegetation / max-veg-for ) 2) * forest-prod-mod
+  set fuelwood-supply (precision (( random-normal fuelwood-production (0.15 * fuelwood-production)) * vegetation / max-veg-for) 2) * forest-prod-mod
+  set palm-supply (precision ( random-normal palm-production (0.15 * palm-production)) 2 ) * forest-prod-mod
+  set protein-supply precision ( random-normal protein-production (0.15 * protein-production)) 2
+end
+
+to do-cropland-production ; Patch Context
+  ; Resources produced by Cropland
+  set maize-supply precision ( random-normal cropland-production ( 0.15 *
+    cropland-production ) ) 2
+  set forage-supply 0
+  set fuelwood-supply 0
+  set palm-supply 0
+  set protein-supply 0
+  if maize-supply < 0 [ set maize-supply 0 ]
+end
+
+to do-fallow-production ; Patch Context 	
+  ; Resources produced by Fallowed patches transitioning to forest:
+  set maize-supply 0
+  set forage-supply (precision (( random-normal forage-production (0.15 * forage-production)) * vegetation / max-veg-for ) 2) * forest-prod-mod
+  set fuelwood-supply (precision (( random-normal fuelwood-production (0.15 * fuelwood-production)) * vegetation / max-veg-for) 2) * forest-prod-mod
+  set palm-supply (precision ( random-normal palm-production (0.15 * palm-production)) 2 ) * forest-prod-mod
+  set protein-supply precision ( random-normal protein-production (0.15 * protein-production)) 2
+end
+
+;#################################################################################################
+;################################# decrease-population ###########################################
+;#################################################################################################
+
+to decrease-population ; Observer Context
+  set num-age-deaths 0                                                           ; Reset Observations from previous timestep
+  set num-maize-deaths 0
+  set num-forage-deaths 0
+  set num-fuelwood-deaths 0
+  set num-palm-deaths 0
+  set num-protein-deaths 0
+  determine-stressed-households                                                  ; Inhabitants die/become stressed due to resource shortages.
+  age-mortality                                                                  ; Inhabitants die due to age-related mortality
+end
+
+to determine-stressed-households ; Observer Context
+
+  ask households [
+    ; Reset stress flags:
+    set maize-stressed? False
+    set forage-stressed? False
+    set fuelwood-stressed? False
+    set palm-stressed? False
+    set protein-stressed? False
+
+    ; Modify expectations of resource production based on
+    ; current resource productivity:
+    if any? household-territory with [land-use = "Cropland"][
+      set expected-maize-production (expected-maize-production + mean [maize-supply] of household-territory with
+        [land-use = "Cropland"]) / 2 ]
+    if intentional-agroforestry? = True and any? household-territory with
+    [ land-use = "Agroforestry" ]
+    [ set expected-forage-production (expected-forage-production + mean [forage-supply] of household-territory with
+        [land-use = "Agroforestry"]) / 2
+      set expected-fuelwood-production (expected-fuelwood-production + mean [fuelwood-supply] of household-territory with
+        [land-use = "Agroforestry"]) / 2
+      set expected-palm-production (expected-palm-production + mean [palm-supply] of household-territory with
+        [land-use = "Agroforestry"]) / 2 ]
+
+    ; Reduce demand by resources supplied from territory:
+    set maize-demand maize-demand - ( 1 - spoilage ) * sum [maize-supply] of household-territory
+    set forage-demand forage-demand - sum [forage-supply] of household-territory
+    set fuelwood-demand fuelwood-demand - sum [fuelwood-supply] of household-territory
+    set palm-demand palm-demand - sum [palm-supply] of household-territory
+    set protein-demand protein-demand - sum [protein-supply] of household-territory
+
+    ; Add surplus to communal stores:
+    if maize-demand < 0
+    [ let surplus maize-demand * -1
+      ask my-settlement [ set communal-maize-surplus communal-maize-surplus +
+        surplus ] ]
+    if fuelwood-demand < 0
+    [ let surplus fuelwood-demand * -1
+      ask my-settlement [ set communal-fuelwood-surplus communal-fuelwood-surplus +
+        surplus ] ]
+    if protein-demand < 0
+    [ let surplus protein-demand * -1
+      ask my-settlement [ set communal-protein-surplus communal-protein-surplus +
+        surplus ] ]
+  ]
+
+  ; For households that retain demand, extract from communal stores +
+  ; unclaimed patches of forest:
+  extract-communal-resources
+  ask settlements with [ any? link-neighbors ] [ extract-forest-resources ]
+
+  ; If demand has not been met, become stressed or die:
+  ask households
+  [ if maize-demand > 0
+    [ set maize-stressed? True
+      if maize-die? = True
+      [ remove-household-territory
+        set num-maize-deaths num-maize-deaths + num-inhabitants
+        set dissolved-households dissolved-households + 1
+        die ]]
+    if forage-demand > 0
+    [ set forage-stressed? True
+      if forage-die? = True
+      [ remove-household-territory
+        set num-forage-deaths num-forage-deaths + num-inhabitants
+        set dissolved-households dissolved-households + 1
+        die ]]
+    if fuelwood-demand > 0
+    [ set fuelwood-stressed? True
+      if fuelwood-die? = True
+      [ remove-household-territory
+        set num-fuelwood-deaths num-fuelwood-deaths + num-inhabitants
+        set dissolved-households dissolved-households + 1
+        die ]]
+    if palm-demand > 0
+    [ set palm-stressed? True
+      if palm-die? = True
+      [ remove-household-territory
+        set num-palm-deaths num-palm-deaths + num-inhabitants
+        set dissolved-households dissolved-households + 1
+        die ]]
+    if protein-demand > 0
+    [ set protein-stressed? True
+      if protein-die? = True
+      [ remove-household-territory
+        set num-protein-deaths num-protein-deaths + num-inhabitants
+        set dissolved-households dissolved-households + 1
+        die ]]]
+
+  ; Settlements without attached households become inactive (coloured red)
+  ; Settlement territory lost. Exclusion zone preventing habitation lost.
+  ask settlements with [ not any? link-neighbors and color = black ]
+  [ set color red
+    ask patches with [settlement-owner = myself] [
+      let this-patch self
+      ifelse any? settlements in-radius forage-radius with [color = black]
+      [ set settlement-owner min-one-of settlements with [color = black][distance this-patch]]
+      [ set settlement-owner no-turtles ] ]
+    let former-excl-zone patches with
+    [ pxcor > 29 and
+      pycor > 29 and
+      pxcor < 627 and
+      pycor < 734 and
+      elevation >= suitable-elevation and
+      land-use != "Water" and
+      (distance min-one-of settlements with [color = black][distance myself]) >= excl-radius ]
+    if forest-restrict? = True [ set former-excl-zone former-excl-zone with [potential-forest?]]
+    if lobe-restrict? = True [ set former-excl-zone former-excl-zone with [productivity = 1]]
+    ask former-excl-zone [set suitable-for-settlement? True] ]
+end
+
+to extract-communal-resources ; Observer Context
+
+  ; If resources are available within the settlement, distribute:		
+  ask households with [ maize-demand > 0 ]
+  [ if [communal-maize-surplus] of my-settlement >= maize-demand
+    [ let maize-deficit maize-demand
+      ask my-settlement [ set communal-maize-surplus communal-maize-surplus -
+        maize-deficit ]
+      set maize-demand 0 ] ]
+  ask households with [ fuelwood-demand > 0 ]
+  [ if [communal-fuelwood-surplus] of my-settlement >= fuelwood-demand
+    [ let fuelwood-deficit fuelwood-demand
+      ask my-settlement [ set communal-fuelwood-surplus communal-fuelwood-surplus -
+        fuelwood-deficit ]
+      set fuelwood-demand 0 ] ]
+  ask households with [ protein-demand > 0 ]
+  [ if [communal-protein-surplus] of my-settlement >= protein-demand
+    [ let protein-deficit protein-demand
+      ask my-settlement [ set communal-protein-surplus communal-protein-surplus -
+        protein-deficit ]
+      set protein-demand 0 ] ]
+end
+
+to extract-forest-resources ; Settlement Context
+
+  ; Calculate per-patch resource production:
+  let random-forage precision ( random-normal forage-production ( 0.15 * forage-production ) ) 2
+  let random-wood precision ( random-normal fuelwood-production ( 0.15 * fuelwood-production ) ) 2
+  let random-palm precision ( random-normal palm-production ( 0.15 * palm-production ) ) 2
+  let random-prot precision ( random-normal protein-production ( 0.15 * protein-production ) ) 2
+  let random-fish precision ( random-normal fish-production ( 0.15 * fish-production ) ) 2
+
+  ; Calculate patches available for resource extraction:
+  let total-forest count local-forest-patches with [ owner = no-turtles and
+    not member? land-use [ "Agroforestry" "Fallow" ] and settlement-owner = myself]
+  let total-fishing count fishing-patches with [owner = no-turtles and settlement-owner = myself]
+
+  ; Calculate total available resources:
+  let total-forage random-forage * total-forest
+  let total-wood random-wood * total-forest
+  let total-palm random-palm * total-forest
+  let total-prot ( random-prot * total-forest ) +
+      ( random-fish * fish-density * total-fishing)
+
+  ; Extract resources to satisfy household demand:
+  ask link-neighbors with [forage-demand > 0]
+  [ if total-forage > forage-demand
+    [ set total-forage total-forage - forage-demand
+      set forage-demand 0 ] ]
+  ask link-neighbors with [fuelwood-demand > 0]
+  [ if total-wood > fuelwood-demand
+    [ set total-wood total-wood - fuelwood-demand
+      set fuelwood-demand 0 ] ]
+  ask link-neighbors with [palm-demand > 0]
+  [ if total-palm > palm-demand
+    [ set total-palm total-palm - palm-demand
+      set palm-demand 0 ] ]
+  ask link-neighbors with [protein-demand > 0]
+  [ if total-prot > protein-demand
+    [ set total-prot total-prot - protein-demand
+      set protein-demand 0 ] ]
+
+  ; Observation procedures:
+  set remaining-maize sum [maize-supply] of link-neighbors / 845
+  set remaining-forage total-forage / 109.5
+  set remaining-fuelwood total-wood / 3500
+  set remaining-palm total-palm / 113.6
+  set remaining-protein total-prot / (max (list protein-modifier 0.01) * 78.34)
+end
+
+to age-mortality ; Observer context
+
+  let num-people-dead 0                                                          ; Reset Observations from previous timestep
+  ask households
+    [ ; Child Mortality
+      foreach children
+      [ child ->
+        let age Ticks - child
+        if random-float 1.000 < (table:get death-prob (word age)) [ set children remove-item (position child children) children
+          set num-people-dead num-people-dead + 1] ]
+      foreach parents
+      [ ; Adult Mortality
+        adult ->
+        let age Ticks - adult
+        if random-float 1.000 < (table:get death-prob (word age)) [ set parents remove-item (position adult parents) parents
+          set num-people-dead num-people-dead + 1] ]]
+  set num-age-deaths num-age-deaths + num-people-dead
+end
+
+
+;#################################################################################################
+;################################### vegetation-growth ###########################################
+;#################################################################################################
+
+to vegetation-growth ; Observer Context
+
+  ; Increase vegetation score + revert to New Growth Forest/Savanna:
+  ask patches with [updating? = True]
+  [ let new-veg-score ln (Ticks - last-converted  ) ;
+    set vegetation precision (random-normal new-veg-score (0.05 * new-veg-score)) 2
+    if potential-forest? = True and vegetation >= max-veg-for [ become-forest ]
+    if potential-forest? = False and vegetation >= max-veg-sav [ become-savanna ] ]
+
+    ; Secondary succession begins on Fallow with no owner:
+    ask patches with [land-use = "Fallow"]
+    [ if owner = no-turtles and updating? = False [ set updating? True ]]
+
+    ; Cropland is abandoned:
+    ask patches with [land-use = "Cropland" and last-converted <= (Ticks -
+      (fallow-age - 1))]
+    [ ifelse potential-forest?
+      [ ifelse intentional-agroforestry?
+        [ become-agroforestry ]
+        [ become-fallow ] ]
+      [ become-fallow ] ]
+
+    ; Limit territory to <=6 patches:
+    ask households with [count household-territory > 6]
+    [ ask min-one-of household-territory [last-converted]
+      [ let this-patch self
+        ask owner [
+        set household-territory household-territory with
+          [ self != this-patch ] ]
+        set owner no-turtles
+        if land-use = "Cropland"
+        [ become-fallow ] ] ]
+end
+
+to become-agroforestry ; Patch Context
+
+  set land-use "Agroforestry"
+  set maize-supply 0
+  set updating? True
+  let new-veg-score ln (Ticks - last-converted)
+  set vegetation precision (random-normal new-veg-score (0.05 * new-veg-score)) 2
+  update-colour
+end
+
+to become-fallow ; Patch Context
+
+  set land-use "Fallow"
+  set last-converted ticks
+  set maize-supply 0
+  set updating? True
+  update-colour
+
+end
+
+to become-forest ; Patch Context
+
+  ; Base variables:
+  set land-use "New Growth Forest"
+  set last-converted ticks
+  let this-patch self
+  ask owner [ set household-territory
+    household-territory with [ self != this-patch ] ]
+  set owner no-turtles
+  set updating? False
+  set vegetation max-veg-for
+
+  ; Reset Supplies:
+  set maize-supply 0
+  set forage-supply 0
+  set fuelwood-supply 0
+  set palm-supply 0
+  set protein-supply 0
+  update-colour
+end
+
+to become-savanna ; Patch Context
+
+  ; Base variables:
+  set land-use "New Growth Savanna"
+  set last-converted ticks
+  let this-patch self
+  ask owner [ set household-territory
+    household-territory with [ self != this-patch ]]
+  set owner no-turtles
+  set updating? False
+  set vegetation max-veg-sav
+
+  ; Reset Supplies:
+  set maize-supply 0
+  set forage-supply 0
+  set fuelwood-supply 0
+  set palm-supply 0
+  set protein-supply 0
+  update-colour
+end
+
+to-report my-settlement ; Household Context
+  report one-of link-neighbors
+end
+
+to update-colour ; Patch context
+  ( ifelse
+    land-use = "Savanna" [ set pcolor green + 2 ]
+    land-use = "Fallow" [ set pcolor green ]
+    land-use = "New Growth Forest" [ set pcolor lime ]
+    land-use = "Old Growth Forest" [ set pcolor lime - 2 ]
+    land-use = "Agroforestry" [ set pcolor green - 3 ]
+    land-use = "Cropland" [ set pcolor yellow - 1 ]
+    land-use = "Water" [ set pcolor blue ]
+    land-use = "New Growth Savanna" [ set pcolor green + 3 ] )
+end
+
+to-report num-inhabitants ; Household Context
+  report count-adults + count-children
+end
+
+to-report count-adults ; Household Context
+  report length parents
+end
+
+to-report count-children ; Household Context
+  report length children
+end
+@#$#@#$#@
+GRAPHICS-WINDOW
+5
+12
+670
+785
+-1
+-1
+1.0
+1
+10
+1
+1
+1
+0
+0
+0
+1
+0
+656
+0
+763
+0
+0
+1
+ticks
+30.0
+
+BUTTON
+672
+11
+735
+44
+NIL
+setup
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+802
+11
+865
+44
+NIL
+go
+T
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+737
+11
+800
+44
+NIL
+step
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+SWITCH
+674
+557
+766
+590
+intentional-agroforestry?
+intentional-agroforestry?
+0
+1
+-1000
+
+CHOOSER
+768
+74
+860
+119
+land-for-cultivation
+land-for-cultivation
+"SAVANNA ONLY" "FOREST ONLY" "FOREST AND SAVANNA"
+1
+
+SLIDER
+877
+181
+969
+214
+cropland-production
+cropland-production
+250
+4000
+1500.0
+250
+1
+NIL
+HORIZONTAL
+
+SLIDER
+770
+581
+862
+614
+probability-of-reactivation
+probability-of-reactivation
+0
+1.0
+0.67
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+769
+510
+861
+543
+protein-modifier
+protein-modifier
+0.05
+0.7
+0.281
+0.05
+1
+NIL
+HORIZONTAL
+
+SLIDER
+878
+618
+970
+651
+fallow-age
+fallow-age
+1
+7
+3.0
+1
+1
+NIL
+HORIZONTAL
+
+PLOT
+1092
+168
+1283
+318
+# Large Settlements
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "plot count settlements with [(settlement-current-capacity / settlement-base-capacity) > 1.1 ]"
+
+SLIDER
+972
+618
+1064
+651
+fallow-period
+fallow-period
+1
+15
+6.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+673
+180
+765
+213
+settlement-base-capacity
+settlement-base-capacity
+100
+500
+211.65
+20
+1
+NIL
+HORIZONTAL
+
+SLIDER
+767
+180
+859
+213
+prob-household-birth
+prob-household-birth
+0.1
+0.3
+0.283
+0.01
+1
+NIL
+HORIZONTAL
+
+TEXTBOX
+676
+157
+826
+177
+Increase-Population
+16
+0.0
+1
+
+PLOT
+1286
+15
+1486
+165
+Population
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "plot population"
+
+TEXTBOX
+677
+286
+746
+306
+Migration
+16
+0.0
+1
+
+CHOOSER
+674
+74
+766
+119
+start-location
+start-location
+"ALL" "NORTH-EAST" "SOUTH-EAST" "NORTH-WEST" "SOUTH-WEST"
+0
+
+PLOT
+1491
+170
+1691
+320
+Dissolved Households
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "plot dissolved-households"
+
+SLIDER
+675
+309
+767
+342
+migration-rate
+migration-rate
+0.01
+0.2
+0.084
+0.01
+1
+NIL
+HORIZONTAL
+
+SLIDER
+673
+215
+765
+248
+yr-10%
+yr-10%
+10
+200
+17.692
+5
+1
+NIL
+HORIZONTAL
+
+SLIDER
+675
+344
+767
+377
+max-settlement-density
+max-settlement-density
+1
+70
+1.367
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+769
+309
+861
+342
+new-settlement-probability
+new-settlement-probability
+0
+1.0
+0.435
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+879
+121
+971
+154
+agricultural-radius
+agricultural-radius
+5
+70
+30.0
+5
+1
+NIL
+HORIZONTAL
+
+SLIDER
+769
+344
+861
+377
+migration-distance
+migration-distance
+5
+200
+196.653
+5
+1
+NIL
+HORIZONTAL
+
+PLOT
+1492
+323
+1692
+473
+Migrating households
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "plot migrated-households"
+
+SLIDER
+877
+217
+969
+250
+yrs-forest-regen
+yrs-forest-regen
+10
+100
+40.0
+10
+1
+NIL
+HORIZONTAL
+
+SLIDER
+973
+217
+1065
+250
+yrs-savanna-regen
+yrs-savanna-regen
+10
+100
+10.0
+10
+1
+NIL
+HORIZONTAL
+
+TEXTBOX
+826
+486
+925
+506
+Convert-Land
+16
+0.0
+1
+
+SLIDER
+973
+121
+1065
+154
+forage-radius
+forage-radius
+10
+70
+70.0
+10
+1
+NIL
+HORIZONTAL
+
+SLIDER
+769
+545
+861
+578
+overproduction-mod
+overproduction-mod
+0
+1
+0.0
+0.05
+1
+NIL
+HORIZONTAL
+
+SLIDER
+972
+181
+1064
+214
+forest-prod-mod
+forest-prod-mod
+1
+3
+1.0
+0.1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+675
+379
+767
+412
+mig-pop-cost
+mig-pop-cost
+0
+3
+0.0
+0.5
+1
+NIL
+HORIZONTAL
+
+SLIDER
+674
+448
+766
+481
+mig-lobe-bonus
+mig-lobe-bonus
+0
+3
+0.0
+0.5
+1
+NIL
+HORIZONTAL
+
+SLIDER
+769
+379
+861
+412
+mig-pop-bonus
+mig-pop-bonus
+0
+3
+1.0
+0.5
+1
+NIL
+HORIZONTAL
+
+SLIDER
+973
+86
+1065
+119
+excl-radius
+excl-radius
+5
+70
+5.0
+5
+1
+NIL
+HORIZONTAL
+
+SWITCH
+674
+121
+766
+154
+forest-restrict?
+forest-restrict?
+1
+1
+-1000
+
+SWITCH
+768
+121
+860
+154
+lobe-restrict?
+lobe-restrict?
+0
+1
+-1000
+
+SLIDER
+877
+253
+969
+286
+fish-density
+fish-density
+0.5
+10
+4.0
+0.5
+1
+NIL
+HORIZONTAL
+
+SWITCH
+876
+314
+966
+347
+maize-die?
+maize-die?
+0
+1
+-1000
+
+SWITCH
+876
+349
+966
+382
+forage-die?
+forage-die?
+1
+1
+-1000
+
+SWITCH
+968
+314
+1058
+347
+fuelwood-die?
+fuelwood-die?
+0
+1
+-1000
+
+SWITCH
+968
+349
+1058
+382
+palm-die?
+palm-die?
+0
+1
+-1000
+
+SWITCH
+876
+384
+966
+417
+protein-die?
+protein-die?
+0
+1
+-1000
+
+PLOT
+1490
+16
+1690
+166
+% Stressed
+NIL
+NIL
+0.0
+1.0
+0.0
+1.0
+true
+false
+"" ""
+PENS
+"Protein" 1.0 0 -16777216 true "" "plot sum [num-inhabitants] of households with [protein-stressed? = True] / population * 100"
+"Maize" 1.0 0 -7500403 true "" "plot sum [num-inhabitants] of households with [maize-stressed? = True] / population * 100"
+"Forage" 1.0 0 -2674135 true "" "plot sum [num-inhabitants] of households with [forage-stressed? = True] / population * 100"
+"Fuelwood" 1.0 0 -955883 true "" "plot sum [num-inhabitants] of households with [fuelwood-stressed? = True] / population * 100"
+"Palm" 1.0 0 -1184463 true "" "plot sum [num-inhabitants] of households with [palm-stressed? = True] / population * 100"
+
+PLOT
+1287
+168
+1487
+318
+Pop. Growth
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "plot (population - old-population) / old-population * 100"
+
+TEXTBOX
+877
+292
+1027
+310
+Decrease-Population
+16
+0.0
+1
+
+PLOT
+1092
+15
+1283
+165
+# Settlements 
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "plot num-settlements"
+
+MONITOR
+1493
+478
+1543
+523
+% Maize-Stress
+count households with [maize-stressed? = TRUE] / count households * 100
+2
+1
+11
+
+MONITOR
+1546
+478
+1596
+523
+% Forage Stressed
+count households with [forage-stressed? = TRUE] / count households * 100
+2
+1
+11
+
+MONITOR
+1599
+478
+1649
+523
+% Wood Stressed
+count households with [fuelwood-stressed? = TRUE] / count households * 100
+2
+1
+11
+
+MONITOR
+1521
+525
+1571
+570
+% Palm Stressed
+count households with [palm-stressed? = TRUE] / count households * 100
+2
+1
+11
+
+MONITOR
+1573
+525
+1623
+570
+% Prot Stressed
+count households with [protein-stressed? = TRUE] / count households * 100
+2
+1
+11
+
+PLOT
+1287
+320
+1487
+470
+Average Settlement Population
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "plot mean [settlement-population] of settlements"
+
+SLIDER
+879
+86
+971
+119
+start-population-modifier
+start-population-modifier
+0.5
+2.0
+0.567
+0.1
+1
+NIL
+HORIZONTAL
+
+PLOT
+1286
+473
+1485
+624
+# Deaths
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "plot num-age-deaths"
+"pen-1" 1.0 0 -7500403 true "" "plot num-maize-deaths"
+"pen-2" 1.0 0 -2674135 true "" "plot num-forage-deaths"
+"pen-3" 1.0 0 -955883 true "" "plot num-fuelwood-deaths"
+"pen-4" 1.0 0 -6459832 true "" "plot num-palm-deaths"
+"pen-5" 1.0 0 -1184463 true "" "plot num-protein-deaths"
+
+PLOT
+1092
+320
+1284
+470
+Pop. Size of Settlements
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 1 -16777216 true "set-plot-x-range 0 500\nset-plot-y-range 0 25\nset-histogram-num-bars 10" "histogram [sum [num-inhabitants] of link-neighbors] of settlements"
+
+SLIDER
+770
+617
+862
+650
+percent-patches-considered
+percent-patches-considered
+0.1
+10
+3.6
+0.1
+1
+NIL
+HORIZONTAL
+
+CHOOSER
+674
+510
+766
+555
+model
+model
+"NULL" "VARIABLES"
+1
+
+SLIDER
+878
+510
+970
+543
+productivity-bonus
+productivity-bonus
+0
+3
+0.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+974
+510
+1066
+543
+flooding-bonus
+flooding-bonus
+0
+3
+0.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+973
+546
+1065
+579
+difficulty-cost
+difficulty-cost
+0
+3
+2.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+878
+582
+970
+615
+distance-cost
+distance-cost
+0
+3
+1.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+973
+582
+1065
+615
+aggregation-bonus
+aggregation-bonus
+0
+3
+1.0
+1
+1
+NIL
+HORIZONTAL
+
+PLOT
+1092
+474
+1282
+623
+Distance
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 1 -16777216 true "set-plot-x-range 0 150\nset-plot-y-range 0 25\nset-histogram-num-bars 10" "histogram [distance min-one-of other settlements [distance myself]] of settlements"
+
+SLIDER
+675
+413
+767
+446
+mig-dist-cost
+mig-dist-cost
+0
+3
+1.0
+0.5
+1
+NIL
+HORIZONTAL
+
+SLIDER
+878
+545
+970
+578
+elevation-bonus
+elevation-bonus
+0
+3
+0.5
+1
+1
+NIL
+HORIZONTAL
+
+TEXTBOX
+850
+49
+915
+69
+Setup
+16
+0.0
+1
+
+SLIDER
+769
+413
+861
+446
+mig-dist-bonus
+mig-dist-bonus
+0
+3
+0.0
+0.5
+1
+NIL
+HORIZONTAL
+
+TEXTBOX
+880
+156
+1030
+176
+Resources\n
+16
+0.0
+1
+
+@#$#@#$#@
+## WHAT IS IT?
+ 
+ MoundSim Population is an exploratory agent-based model built to explore the growth and development of the pre-Columbian Casarabe culture in the Monumental Mound Region  (MMR) of northern Bolivia. It generates a simplified representation of a 5020 km2 area of the MMR, encompassing the study region of Lombardo and Prümers (2010), on a gridded landscape of square land patches (1 ha in size). Situated within this landscape are agents designed to represent pre-Columbian "households", nuclear family units comprised of adults and children. Contemporary enthographic data is used to inform the behaviour of these agents. Each timestep within the model equates to one year of real time. The user is able to run the model for up to 1,000 timesteps, reflecting the known occupation period of the mounds within the real MMR (Calandra and Salceda, 2004; Jaimes Betancourt, 2012, 2015). 
+
+The purpose of MoundSim Population is to constrain the maximum population size of the Casarabe culture, as well as to gain insight into the spatial distribution of their settlement mounds. The model is constructed to be a 'virtual laboratory (Magliocca and Ellis, 2016) to assess the growth of this culture under a variety of restrictions.
+
+MoundSim Population was originally developed in NetLogo vers. 6.3.0 (Wilensky, 1999).
+
+
+## HOW IT WORKS
+
+
+There are six general procedures within the model:
+
+1.	Population Growth
+2. 	Household Migration
+3. 	Land Conversion
+4.	Resource Production
+5. 	Population Decrease
+6. 	Vegetation succession
+
+Upon initialisation, the model spawns several 'settlement' agents on the virtual landscape, each with a number of attached 'household' agents. In order to survive, these households require a set number of resources (maize, foraged tree crops, fuelwood, palm leaves, animal protein) and, depending on the model settings, may die if these requirements are not met. 
+
+In the first procedure (population growth), new households can be created as the children of existing households age and start families of their own. Any household that has two living adults also has the opportunity to produce new children within the household.
+
+The second procedure handles household migration. Over time, settlements may experience migration events, where several households will leave to either join another existing settlement, or to start a new one themselves. They can only join an existing settlement if it is below capacity, a variable that grows over time as a settlement continues to be occupied, and a new settlement can only be created if there are fewer than a user-defined number of settlements already in range (see ODD for further details). Any migrating households detach themselves from their former settlement, abandon any territory they previously claimed, and then set up in the new location. 
+
+In order to acquire resources, household agents are able to claim and convert patches on the landscape, the purpose of the land conversion procedure. Households can select which patch to claim in various ways that can be selected by the user: a null model (random selection) or a range of environmental variables. These decisions are made based on the principles of bounded rationality (Simon, 1955): households do not assess every patch available to them when making a decision. Any claimed patch is immediately converted to cropland to produce maize. Depending on if the patch regenerates into forest, it can also be used to produce non-protein related forest resources. 
+
+Resource production is a simple procedure that assigns resources to the patches claimed by households. The quantity of each resource depends on the patch's dominant land cover (determined by the [land-use] variable); cropland exclusively produces maize, while forested land has the potential to produce forest resources. 
+
+In the population decrease procedure, households assess whether they have produced a sufficient quantity of each resource from their territory. If the amount recovered is insufficient, they have the opportunity to obtain resources from (i) other households in the same settlement, and (ii) the surrounding patches of unclaimed forest. They can also obtain protein from low-lying parts of the open savannas (through fishing). If a household is still unable to produce sufficient resources, depending on the user's preferences, they are either flagged as "stressed" (this is a simple marker for observation) or die. When a household dies, their territory is abandoned. 
+
+The final procedure, vegetation growth, is intended to represent the natural process of secondary succession. Households will naturally abandon cropland to lay fallow after several years. Over time, this will regenerate back into either forest or open savanna, depending on the treelines set when the model was initialised. The procedure also prevents agents from managing excessive quantities of land. 
+
+
+
+## HOW TO USE IT
+
+The model can be initialised using the SETUP button. To start a simulation, press the GO button. To move a single timestep forward, press STEP. The user is able to customise simulations by adjusting a variety of parameters on the model interface. Although many of these sliders can also be changed during the simulation, it is highly recommended that these are set beforehand. The parameters described below are marked [Y] if they can be changed during a simulation or [N] if they cannot:
+
+
+### SETUP PARAMETERS
+
+AGRICULTURAL RADIUS: Determines the radius within which households can farm from their settlement [N]
+
+EXCL-RADIUS: Determines the minimum distance between settlements [N]
+
+FORAGE-RADIUS: Determines the radius within which households can extract forest resources from their settlement. [N]
+
+FOREST-RESTRICT?: Settlements may only spawn in forested areas [N]
+
+LAND-FOR-CULTIVATION: Determines what patches of land are available for household agents to modify. SAVANNA ONLY = only patches with a [land-use] value of “Savanna” or “New Growth Savanna”, FOREST ONLY = only patches with a [land-use] value of “Old Growth Forest” or “New Growth Forest”, FOREST AND SAVANNA = both Savanna and Forest patches are available for modification. [N]
+
+LOBE-RESTRICT?: Settlements may only spawn in areas with fertile sediment [N]
+
+START-LOCATION: Determines whether settlements spawn in a particular part of the landscape [N]
+
+START-POPULATION: Modifies the starting population of the model. Acts as a multiple (e.g., 1.4 = 1.4 * default base population [N]
+
+
+### INCREASE POPULATION
+
+PROB-HOUSEHOLD-BIRTH: Probability for a household with two adults to produce new children. [Y]
+
+SETTLEMENT-BASE-CAPACITY: Base population capacity for a new settlement, which increases over time. [N]
+
+YR-10%: Determines number of timesteps it takes for base population capacity to increase by 10%. [N]
+
+### MIGRATION
+
+MAX-SETTLEMENT-DENSITY: The maximum number of settlements tolerated by household agents within [migration-distance] patches of their home settlement. [Y]
+
+MIGRATION-DISTANCE: The maximum distance (# patches) households will travel when migrating. [Y]
+
+MIG-DIST-BONUS: Determines whether households prefer greater distances when choosing where to migrate. [Y] 
+
+MIG-DIST-COST: Determines whether households prefer smaller distances when choosing where to migrate. [Y] 
+
+MIG-LOBE-BONUS: Determines whether households prioritise settling on fertile ground when migrating. [Y]
+
+MIG-POP-BONUS: Determines whether households prefer more populated settlements when choosing where to migrate. [Y] 
+
+MIG-POP-COST: Determines whether households prefer less populated settlements when choosing where to migrate. [Y] 
+
+MIGRATION-RATE: The chance for an eligible settlement to experience a migration even.t [Y]
+
+NEW-SETTLEMENT-PROB: The chance for migrating household to attempt to start a new settlement. [Y]
+
+### CONVERT LAND
+
+AGGREGATION-BONUS: Determines whether households consider the patch’s distance from other claimed farmland when selecting farming locations. Can only be used when MODEL = VARIABLES [Y]
+
+DIFFICULTY-COST: Determines whether households consider clearance difficulty when selecting farming locations. Can only be used when MODEL = VARIABLES [Y]
+
+DISTANCE-COST: Determines whether households consider the distance of the patch from the settlement when selecting farming locations. Can only be used when MODEL = VARIABLES [Y]
+
+ELEVATION-BONUS: Determines whether households consider higher elevation when selecting farming locations. Can only be used when MODEL = VARIABLES [Y]
+
+FALLOW-AGE: The number of timesteps before which a patch of cropland is fallowed [Y]
+
+FALLOW-PERIOD: The number of timesteps before a fallows patch regenerates into forest/savanna [Y]
+
+FLOODING-BONUS: Determines whether households consider lower elevation when selecting farming locations. Can only be used when MODEL = VARIABLES [Y]
+
+INTENTIONAL-AGROFORESTRY?: Household agents will inentionally convert former cropland into agroforestry if possible [Y]
+
+MODEL: Determines the values household agents consider when selecting land to farm. NULL = null model (stochasticity based), VARIABLES = environmental variables (see Agent Behaviour). [Y]
+
+PERCENT-PATCHES-CONSIDERED: Determines percentage of available patches considered when households select where to farm.
+
+PROBABILITY-OF-REACTIVATION: The probability of household agents reactivating fallowed territory as opposed to claiming new territory [Y]
+
+PRODUCTIVITY-BONUS: Determines whether households consider patch productivity when selecting farming locations. Can only be used when MODEL = VARIABLES [Y]
+
+PROTEIN-MODIFIER: The % of annual protein intake sourced from animals [Y]
+
+
+### RESOURCE PARAMETERS
+
+CROPLAND-PRODUCTION: Determines the quantity of maize produced per hectare of farmland (kg/ha) [Y]
+
+FISH-DENSITY: Modifier to the sustainable density of fish within a patch of suitable territory [Y]
+
+FOREST-PROD-MOD: Determines how much more productive forests are after being modified by household agents. [Y]
+
+YRS-FOREST-REGEN: Average number of timesteps taken for forest to regenerate [Y]
+
+YRS-SAVANNA-REGEN: Average number of timesteps taken for savanna to regenerate [Y]
+
+
+
+### DECREASE POPULATION
+
+MAIZE-DIE?: Determines whether households will die due to an insufficient quantity of maize [Y]
+
+FORAGE-DIE?: Determines whether households will die due to an insufficient quantity of forage [Y]
+
+FUELWOOD-DIE?: Determines whether households will die due to an insufficient quantity of fuelwood [Y]
+
+PALM-DIE?: Determines whether households will die due to an insufficient quantity of palm [Y]
+
+PROTEIN-DIE?: Determines whether households will die due to an insufficient quantity of protein [Y]
+
+
+## THINGS TO NOTICE
+
+1. Notice how the maximum population varies depending upon the resources restricted.
+
+2. Notice how the number and spatial distribution of settlements is not directly associated with population. 
+
+
+## EXTENDING THE MODEL
+
+1. Enabling resources to vary over time
+
+2. Incorporating alternative behavioural models (see Crooks et al., 2018).
+
+3. Incorporating different societal structures (e.g., societal level constraints on agriculture). 
+
+
+## RELATED MODELS
+
+Barton, M., 2014. Complexity, Social Complexity, and Modeling. J Archaeol Method Theory 21, 306–324. https://doi.org/10.1007/s
+
+Riris, P., 2018. Assessing the impact and legacy of swidden farming in neotropical interfluvial environments through exploratory modelling of post-contact Piaroa land use (Upper Orinoco, Venezuela). Holocene 28, 945–954. https://doi.org/10.1177/0959683617752857
+
+
+## REFERENCES
+
+Calandra, H., Salceda, S., 2004. Amazonia boliviana: arqueología de los Llanos de Mojos. Acta Amazonica 34, 155–163. https://doi.org/10.1590/s0044-59672004000200003
+
+Crooks, Andrew., Malleson, Nick., Manley, Ed., Heppenstall, Alison., 2018. Agent-Based Modelling & Geographical Information Systems: A Practical Primer, 1st ed. SAGE, London.
+
+Jaimes Betancourt, C., 2015. La cerámica de la Loma Mendoza, in: Prümers, H. (Ed.), Loma Mendoza. Las Excavaciones de Los Años 1999-2002. Plural Editores, La Paz, pp. 89–222.
+
+Jaimes Betancourt, C., 2012. La cerámica de la Loma Salvatierra, Beni-Bolivia. Plural Editores., La Paz.
+
+Lombardo, U., Prümers, H., 2010. Pre-Columbian human occupation patterns in the eastern plains of the Llanos de Moxos, Bolivian Amazonia. Journal of Archaeological Science 37, 1875–1885. https://doi.org/10.1016/j.jas.2010.02.011
+
+Magliocca, N., Ellis, E., 2016. Evolving human landscapes: a virtual laboratory approach. J Land Use Sci 11, 642–671. https://doi.org/10.1080/1747423X.2016.1241314
+
+Simon, H., 1955. A Behavioral Model of Rational Choice. Source: The Quarterly Journal of Economics 69, 99–118.
+
+Wilensky, U., 1999. NetLogo [WWW Document]. Center for Connected Learning and Computer-Based Modeling, Northwestern University, Evanston, IL. URL http://ccl.northwestern.edu/netlogo/
+@#$#@#$#@
+default
+true
+0
+Polygon -7500403 true true 150 5 40 250 150 205 260 250
+
+airplane
+true
+0
+Polygon -7500403 true true 150 0 135 15 120 60 120 105 15 165 15 195 120 180 135 240 105 270 120 285 150 270 180 285 210 270 165 240 180 180 285 195 285 165 180 105 180 60 165 15
+
+arrow
+true
+0
+Polygon -7500403 true true 150 0 0 150 105 150 105 293 195 293 195 150 300 150
+
+box
+false
+0
+Polygon -7500403 true true 150 285 285 225 285 75 150 135
+Polygon -7500403 true true 150 135 15 75 150 15 285 75
+Polygon -7500403 true true 15 75 15 225 150 285 150 135
+Line -16777216 false 150 285 150 135
+Line -16777216 false 150 135 15 75
+Line -16777216 false 150 135 285 75
+
+bug
+true
+0
+Circle -7500403 true true 96 182 108
+Circle -7500403 true true 110 127 80
+Circle -7500403 true true 110 75 80
+Line -7500403 true 150 100 80 30
+Line -7500403 true 150 100 220 30
+
+butterfly
+true
+0
+Polygon -7500403 true true 150 165 209 199 225 225 225 255 195 270 165 255 150 240
+Polygon -7500403 true true 150 165 89 198 75 225 75 255 105 270 135 255 150 240
+Polygon -7500403 true true 139 148 100 105 55 90 25 90 10 105 10 135 25 180 40 195 85 194 139 163
+Polygon -7500403 true true 162 150 200 105 245 90 275 90 290 105 290 135 275 180 260 195 215 195 162 165
+Polygon -16777216 true false 150 255 135 225 120 150 135 120 150 105 165 120 180 150 165 225
+Circle -16777216 true false 135 90 30
+Line -16777216 false 150 105 195 60
+Line -16777216 false 150 105 105 60
+
+car
+false
+0
+Polygon -7500403 true true 300 180 279 164 261 144 240 135 226 132 213 106 203 84 185 63 159 50 135 50 75 60 0 150 0 165 0 225 300 225 300 180
+Circle -16777216 true false 180 180 90
+Circle -16777216 true false 30 180 90
+Polygon -16777216 true false 162 80 132 78 134 135 209 135 194 105 189 96 180 89
+Circle -7500403 true true 47 195 58
+Circle -7500403 true true 195 195 58
+
+circle
+false
+0
+Circle -7500403 true true 0 0 300
+
+circle 2
+false
+0
+Circle -7500403 true true 0 0 300
+Circle -16777216 true false 30 30 240
+
+cow
+false
+0
+Polygon -7500403 true true 200 193 197 249 179 249 177 196 166 187 140 189 93 191 78 179 72 211 49 209 48 181 37 149 25 120 25 89 45 72 103 84 179 75 198 76 252 64 272 81 293 103 285 121 255 121 242 118 224 167
+Polygon -7500403 true true 73 210 86 251 62 249 48 208
+Polygon -7500403 true true 25 114 16 195 9 204 23 213 25 200 39 123
+
+cylinder
+false
+0
+Circle -7500403 true true 0 0 300
+
+dot
+false
+0
+Circle -7500403 true true 90 90 120
+
+face happy
+false
+0
+Circle -7500403 true true 8 8 285
+Circle -16777216 true false 60 75 60
+Circle -16777216 true false 180 75 60
+Polygon -16777216 true false 150 255 90 239 62 213 47 191 67 179 90 203 109 218 150 225 192 218 210 203 227 181 251 194 236 217 212 240
+
+face neutral
+false
+0
+Circle -7500403 true true 8 7 285
+Circle -16777216 true false 60 75 60
+Circle -16777216 true false 180 75 60
+Rectangle -16777216 true false 60 195 240 225
+
+face sad
+false
+0
+Circle -7500403 true true 8 8 285
+Circle -16777216 true false 60 75 60
+Circle -16777216 true false 180 75 60
+Polygon -16777216 true false 150 168 90 184 62 210 47 232 67 244 90 220 109 205 150 198 192 205 210 220 227 242 251 229 236 206 212 183
+
+fish
+false
+0
+Polygon -1 true false 44 131 21 87 15 86 0 120 15 150 0 180 13 214 20 212 45 166
+Polygon -1 true false 135 195 119 235 95 218 76 210 46 204 60 165
+Polygon -1 true false 75 45 83 77 71 103 86 114 166 78 135 60
+Polygon -7500403 true true 30 136 151 77 226 81 280 119 292 146 292 160 287 170 270 195 195 210 151 212 30 166
+Circle -16777216 true false 215 106 30
+
+flag
+false
+0
+Rectangle -7500403 true true 60 15 75 300
+Polygon -7500403 true true 90 150 270 90 90 30
+Line -7500403 true 75 135 90 135
+Line -7500403 true 75 45 90 45
+
+flower
+false
+0
+Polygon -10899396 true false 135 120 165 165 180 210 180 240 150 300 165 300 195 240 195 195 165 135
+Circle -7500403 true true 85 132 38
+Circle -7500403 true true 130 147 38
+Circle -7500403 true true 192 85 38
+Circle -7500403 true true 85 40 38
+Circle -7500403 true true 177 40 38
+Circle -7500403 true true 177 132 38
+Circle -7500403 true true 70 85 38
+Circle -7500403 true true 130 25 38
+Circle -7500403 true true 96 51 108
+Circle -16777216 true false 113 68 74
+Polygon -10899396 true false 189 233 219 188 249 173 279 188 234 218
+Polygon -10899396 true false 180 255 150 210 105 210 75 240 135 240
+
+house
+false
+0
+Rectangle -7500403 true true 45 120 255 285
+Rectangle -16777216 true false 120 210 180 285
+Polygon -7500403 true true 15 120 150 15 285 120
+Line -16777216 false 30 120 270 120
+
+leaf
+false
+0
+Polygon -7500403 true true 150 210 135 195 120 210 60 210 30 195 60 180 60 165 15 135 30 120 15 105 40 104 45 90 60 90 90 105 105 120 120 120 105 60 120 60 135 30 150 15 165 30 180 60 195 60 180 120 195 120 210 105 240 90 255 90 263 104 285 105 270 120 285 135 240 165 240 180 270 195 240 210 180 210 165 195
+Polygon -7500403 true true 135 195 135 240 120 255 105 255 105 285 135 285 165 240 165 195
+
+line
+true
+0
+Line -7500403 true 150 0 150 300
+
+line half
+true
+0
+Line -7500403 true 150 0 150 150
+
+pentagon
+false
+0
+Polygon -7500403 true true 150 15 15 120 60 285 240 285 285 120
+
+person
+false
+0
+Circle -7500403 true true 110 5 80
+Polygon -7500403 true true 105 90 120 195 90 285 105 300 135 300 150 225 165 300 195 300 210 285 180 195 195 90
+Rectangle -7500403 true true 127 79 172 94
+Polygon -7500403 true true 195 90 240 150 225 180 165 105
+Polygon -7500403 true true 105 90 60 150 75 180 135 105
+
+plant
+false
+0
+Rectangle -7500403 true true 135 90 165 300
+Polygon -7500403 true true 135 255 90 210 45 195 75 255 135 285
+Polygon -7500403 true true 165 255 210 210 255 195 225 255 165 285
+Polygon -7500403 true true 135 180 90 135 45 120 75 180 135 210
+Polygon -7500403 true true 165 180 165 210 225 180 255 120 210 135
+Polygon -7500403 true true 135 105 90 60 45 45 75 105 135 135
+Polygon -7500403 true true 165 105 165 135 225 105 255 45 210 60
+Polygon -7500403 true true 135 90 120 45 150 15 180 45 165 90
+
+sheep
+false
+15
+Circle -1 true true 203 65 88
+Circle -1 true true 70 65 162
+Circle -1 true true 150 105 120
+Polygon -7500403 true false 218 120 240 165 255 165 278 120
+Circle -7500403 true false 214 72 67
+Rectangle -1 true true 164 223 179 298
+Polygon -1 true true 45 285 30 285 30 240 15 195 45 210
+Circle -1 true true 3 83 150
+Rectangle -1 true true 65 221 80 296
+Polygon -1 true true 195 285 210 285 210 240 240 210 195 210
+Polygon -7500403 true false 276 85 285 105 302 99 294 83
+Polygon -7500403 true false 219 85 210 105 193 99 201 83
+
+square
+false
+0
+Rectangle -7500403 true true 30 30 270 270
+
+square 2
+false
+0
+Rectangle -7500403 true true 30 30 270 270
+Rectangle -16777216 true false 60 60 240 240
+
+star
+false
+0
+Polygon -7500403 true true 151 1 185 108 298 108 207 175 242 282 151 216 59 282 94 175 3 108 116 108
+
+target
+false
+0
+Circle -7500403 true true 0 0 300
+Circle -16777216 true false 30 30 240
+Circle -7500403 true true 60 60 180
+Circle -16777216 true false 90 90 120
+Circle -7500403 true true 120 120 60
+
+tree
+false
+0
+Circle -7500403 true true 118 3 94
+Rectangle -6459832 true false 120 195 180 300
+Circle -7500403 true true 65 21 108
+Circle -7500403 true true 116 41 127
+Circle -7500403 true true 45 90 120
+Circle -7500403 true true 104 74 152
+
+triangle
+false
+0
+Polygon -7500403 true true 150 30 15 255 285 255
+
+triangle 2
+false
+0
+Polygon -7500403 true true 150 30 15 255 285 255
+Polygon -16777216 true false 151 99 225 223 75 224
+
+truck
+false
+0
+Rectangle -7500403 true true 4 45 195 187
+Polygon -7500403 true true 296 193 296 150 259 134 244 104 208 104 207 194
+Rectangle -1 true false 195 60 195 105
+Polygon -16777216 true false 238 112 252 141 219 141 218 112
+Circle -16777216 true false 234 174 42
+Rectangle -7500403 true true 181 185 214 194
+Circle -16777216 true false 144 174 42
+Circle -16777216 true false 24 174 42
+Circle -7500403 false true 24 174 42
+Circle -7500403 false true 144 174 42
+Circle -7500403 false true 234 174 42
+
+turtle
+true
+0
+Polygon -10899396 true false 215 204 240 233 246 254 228 266 215 252 193 210
+Polygon -10899396 true false 195 90 225 75 245 75 260 89 269 108 261 124 240 105 225 105 210 105
+Polygon -10899396 true false 105 90 75 75 55 75 40 89 31 108 39 124 60 105 75 105 90 105
+Polygon -10899396 true false 132 85 134 64 107 51 108 17 150 2 192 18 192 52 169 65 172 87
+Polygon -10899396 true false 85 204 60 233 54 254 72 266 85 252 107 210
+Polygon -7500403 true true 119 75 179 75 209 101 224 135 220 225 175 261 128 261 81 224 74 135 88 99
+
+wheel
+false
+0
+Circle -7500403 true true 3 3 294
+Circle -16777216 true false 30 30 240
+Line -7500403 true 150 285 150 15
+Line -7500403 true 15 150 285 150
+Circle -7500403 true true 120 120 60
+Line -7500403 true 216 40 79 269
+Line -7500403 true 40 84 269 221
+Line -7500403 true 40 216 269 79
+Line -7500403 true 84 40 221 269
+
+wolf
+false
+0
+Polygon -16777216 true false 253 133 245 131 245 133
+Polygon -7500403 true true 2 194 13 197 30 191 38 193 38 205 20 226 20 257 27 265 38 266 40 260 31 253 31 230 60 206 68 198 75 209 66 228 65 243 82 261 84 268 100 267 103 261 77 239 79 231 100 207 98 196 119 201 143 202 160 195 166 210 172 213 173 238 167 251 160 248 154 265 169 264 178 247 186 240 198 260 200 271 217 271 219 262 207 258 195 230 192 198 210 184 227 164 242 144 259 145 284 151 277 141 293 140 299 134 297 127 273 119 270 105
+Polygon -7500403 true true -1 195 14 180 36 166 40 153 53 140 82 131 134 133 159 126 188 115 227 108 236 102 238 98 268 86 269 92 281 87 269 103 269 113
+
+x
+false
+0
+Polygon -7500403 true true 270 75 225 30 30 225 75 270
+Polygon -7500403 true true 30 75 75 30 270 225 225 270
+@#$#@#$#@
+NetLogo 6.3.0
+@#$#@#$#@
+@#$#@#$#@
+@#$#@#$#@
+<experiments>
+  <experiment name="LHS" repetitions="50" sequentialRunOrder="false" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <metric>date-and-time</metric>
+    <metric>productivity-bonus</metric>
+    <metric>num-settlements</metric>
+    <metric>population</metric>
+    <metric>population-growth</metric>
+    <metric>settlement-population-mean</metric>
+    <metric>settlement-population-sd</metric>
+    <metric>settlement-min-dist-mean</metric>
+    <metric>settlement-min-dist-sd</metric>
+    <metric>settlement-xcor-mean</metric>
+    <metric>settlement-ycor-mean</metric>
+    <metric>settlement-xycor-dist-mean</metric>
+    <metric>settlement-xycor-dist-sd</metric>
+    <metric>settlement-mean-dist-sd</metric>
+    <metric>new-households</metric>
+    <metric>migrated-households</metric>
+    <metric>num-age-deaths</metric>
+    <metric>num-maize-deaths</metric>
+    <metric>num-forage-deaths</metric>
+    <metric>num-fuelwood-deaths</metric>
+    <metric>num-palm-deaths</metric>
+    <metric>num-protein-deaths</metric>
+    <metric>dissolved-households</metric>
+    <metric>count households with [maize-stressed? = True]</metric>
+    <metric>count households with [forage-stressed? = True]</metric>
+    <metric>count households with [fuelwood-stressed? = True]</metric>
+    <metric>count households with [palm-stressed? = True]</metric>
+    <metric>count households with [protein-stressed? = True]</metric>
+    <metric>min [remaining-maize] of settlements</metric>
+    <metric>mean [remaining-maize] of settlements</metric>
+    <metric>median [remaining-maize] of settlements</metric>
+    <metric>max [remaining-maize] of settlements</metric>
+    <metric>min [remaining-forage] of settlements</metric>
+    <metric>mean [remaining-forage] of settlements</metric>
+    <metric>median [remaining-forage] of settlements</metric>
+    <metric>max [remaining-forage] of settlements</metric>
+    <metric>min [remaining-fuelwood] of settlements</metric>
+    <metric>mean [remaining-fuelwood] of settlements</metric>
+    <metric>median [remaining-fuelwood] of settlements</metric>
+    <metric>max [remaining-fuelwood] of settlements</metric>
+    <metric>min [remaining-palm] of settlements</metric>
+    <metric>mean [remaining-palm] of settlements</metric>
+    <metric>median [remaining-palm] of settlements</metric>
+    <metric>max [remaining-palm] of settlements</metric>
+    <metric>min [remaining-protein] of settlements</metric>
+    <metric>mean [remaining-protein] of settlements</metric>
+    <metric>median [remaining-protein] of settlements</metric>
+    <metric>max [remaining-protein] of settlements</metric>
+    <metric>count patches with [land-use = "Water"]</metric>
+    <metric>count patches with [land-use = "Savanna"]</metric>
+    <metric>count patches with [land-use = "Old Growth Forest"]</metric>
+    <metric>count patches with [land-use = "New Growth Savanna"]</metric>
+    <metric>count patches with [land-use = "New Growth Forest"]</metric>
+    <metric>count patches with [land-use = "Cropland" and potential-forest? = True]</metric>
+    <metric>count patches with [land-use = "Cropland" and potential-forest? = False]</metric>
+    <metric>count patches with [land-use = "Fallow" and potential-forest? = True]</metric>
+    <metric>count patches with [land-use = "Fallow" and potential-forest? = False]</metric>
+    <metric>count patches with [land-use = "Agroforestry"]</metric>
+    <metric>count patches with [settlement-owner != no-turtles]</metric>
+    <metric>count patches with [modifiable? = True]</metric>
+    <metric>min [n-modified] of patches with [modifiable? = TRUE]</metric>
+    <metric>mean [n-modified] of patches with [modifiable? = TRUE]</metric>
+    <metric>median [n-modified] of patches with [modifiable? = TRUE]</metric>
+    <metric>max [n-modified] of patches with [modifiable? = TRUE]</metric>
+    <enumeratedValueSet variable="palm-die?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="lobe-restrict?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="productivity-bonus">
+      <value value="50"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="start-location">
+      <value value="&quot;ALL&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="cropland-production">
+      <value value="1500"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mig-dist-cost">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="model">
+      <value value="&quot;VARIABLES&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="settlement-base-capacity">
+      <value value="424.753"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="maize-die?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="intentional-agroforestry?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="forage-radius">
+      <value value="70"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="start-population-modifier">
+      <value value="0.691"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="forage-die?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="agricultural-radius">
+      <value value="30"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mig-lobe-bonus">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="new-settlement-probability">
+      <value value="0.674"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="fallow-period">
+      <value value="6"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="yr-10%">
+      <value value="172.553"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="prob-household-birth">
+      <value value="0.211"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="elevation-bonus">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="max-settlement-density">
+      <value value="13.768"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="forest-restrict?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="protein-modifier">
+      <value value="0.354"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="percent-patches-considered">
+      <value value="3.6"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="yrs-savanna-regen">
+      <value value="10"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="migration-rate">
+      <value value="0.043"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="difficulty-cost">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="protein-die?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="yrs-forest-regen">
+      <value value="40"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="aggregation-bonus">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="excl-radius">
+      <value value="5"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mig-dist-bonus">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mig-pop-cost">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="migration-distance">
+      <value value="181.617"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="overproduction-mod">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="fish-density">
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="fuelwood-die?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="forest-prod-mod">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="land-for-cultivation">
+      <value value="&quot;FOREST AND SAVANNA&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="probability-of-reactivation">
+      <value value="0.67"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="mig-pop-bonus">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="distance-cost">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="flooding-bonus">
+      <value value="1"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="fallow-age">
+      <value value="3"/>
+    </enumeratedValueSet>
+  </experiment>
+</experiments>
+@#$#@#$#@
+@#$#@#$#@
+default
+0.0
+-0.2 0 0.0 1.0
+0.0 1 1.0 0.0
+0.2 0 0.0 1.0
+link direction
+true
+0
+Line -7500403 true 150 150 90 180
+Line -7500403 true 150 150 210 180
+@#$#@#$#@
+0
+@#$#@#$#@
